@@ -74,6 +74,15 @@ export interface InsightReport {
   chart?: InsightChart;
   resultTable?: InsightResultTable;
   sqlTraces: AnalysisPlanStep[];
+  debugLogs?: AnalysisDebugLog[];
+}
+
+export interface AnalysisDebugLog {
+  ts: string;
+  kind: "llm_request" | "llm_response" | "sql_started" | "sql_result" | "sql_blocked" | "sql_error" | "system";
+  title: string;
+  detail?: string;
+  payload?: string;
 }
 
 export interface InsightChart {

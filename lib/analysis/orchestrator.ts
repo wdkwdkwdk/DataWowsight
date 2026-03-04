@@ -22,7 +22,7 @@ import {
 } from "../memory-db";
 import { ensureSafeReadOnlySql } from "../sql-safety";
 import { withTargetDb } from "../target-db/client";
-import type { AnalysisPlanStep, ClarifyRequest, DbKind, InsightChart, InsightReport, QueryRequest, RunEvent } from "../types";
+import type { AnalysisDebugLog, AnalysisPlanStep, ClarifyRequest, DbKind, InsightChart, InsightReport, QueryRequest, RunEvent } from "../types";
 
 type PlannerAction =
   | {
@@ -40,6 +40,7 @@ type PlannerAction =
   | {
       action: "final_answer";
       summary: string;
+      showChart?: boolean;
     };
 
 type ProgressState = {
@@ -260,13 +261,26 @@ async function executeAnalysis(input: {
 
   const evidence: Array<{ label: string; value: string }> = [];
   const traces: AnalysisPlanStep[] = [];
+  const debugLogs: AnalysisDebugLog[] = [];
   const resultSets: Array<{ title: string; sql: string; rows: Array<Record<string, unknown>> }> = [];
   const triedSql = new Set<string>();
   let duplicateBlockCount = 0;
   let forceLightweightMode = false;
   let noteUpdatedInRun = false;
   let llmFinalSummary: string | null = null;
+  let llmWantsChart = false;
   const runStartedAt = Date.now();
+  const userExplicitlyAskedChart = shouldRequestChartFromQuestion(input.question);
+  const pushDebugLog = (log: Omit<AnalysisDebugLog, "ts">) => {
+    if (debugLogs.length >= 300) return;
+    const keepFullLlmPayload = log.kind === "llm_request" || log.kind === "llm_response";
+    debugLogs.push({
+      ts: new Date().toISOString(),
+      ...log,
+      detail: log.detail ? trimLogText(log.detail, 2000) : undefined,
+      payload: log.payload ? (keepFullLlmPayload ? log.payload : trimLogText(log.payload, 12000)) : undefined,
+    });
+  };
 
   await withTargetDb(input.uri, async (db) => {
     for (let stepIndex = 0; stepIndex < ANALYSIS_DEFAULTS.maxSqlPerRun; stepIndex++) {
@@ -283,10 +297,20 @@ async function executeAnalysis(input: {
         stepIndex,
         datasourceNote,
         history,
+        onDebugLog: pushDebugLog,
       });
-      const guardedAction = guardPlannerAction(action, input.dbKind, input.question, readyEntities, stepIndex);
+      let guardedAction = guardPlannerAction(action, input.dbKind, input.question, readyEntities, stepIndex);
+
+      // 当兜底把“动作 JSON 字符串”塞进 final_answer.summary 时，尝试恢复为真实动作继续执行。
+      if (guardedAction.action === "final_answer") {
+        const recovered = parsePlannerAction(guardedAction.summary);
+        if (recovered && recovered.action !== "final_answer") {
+          guardedAction = guardPlannerAction(recovered, input.dbKind, input.question, readyEntities, stepIndex);
+        }
+      }
 
       if (guardedAction.action === "final_answer") {
+        llmWantsChart = guardedAction.showChart === true || (guardedAction.showChart !== false && userExplicitlyAskedChart);
         if (!isPlannerFallbackSummary(guardedAction.summary)) {
           llmFinalSummary = guardedAction.summary;
         }
@@ -346,6 +370,12 @@ async function executeAnalysis(input: {
         title: guardedAction.title,
         sql: guardedAction.sql,
       });
+      pushDebugLog({
+        kind: "sql_started",
+        title: guardedAction.title,
+        payload: guardedAction.sql,
+        detail: guardedAction.rationale,
+      });
 
       const safety = ensureSafeReadOnlySql(guardedAction.sql);
       if (!safety.ok) {
@@ -375,6 +405,12 @@ async function executeAnalysis(input: {
           value: `SQL 被安全策略拦截：${safety.reason}`,
         };
         evidence.push(evidenceItem);
+        pushDebugLog({
+          kind: "sql_blocked",
+          title: guardedAction.title,
+          detail: safety.reason,
+          payload: guardedAction.sql,
+        });
         await input.onEvent?.("sql_blocked", stepIndex + 1, { trace: item });
         await input.onEvent?.("evidence", stepIndex + 1, evidenceItem);
         continue;
@@ -403,6 +439,12 @@ async function executeAnalysis(input: {
               : "SQL 与之前步骤重复，已跳过；LLM 需要换一个分析角度。",
         };
         evidence.push(evidenceItem);
+        pushDebugLog({
+          kind: "sql_blocked",
+          title: guardedAction.title,
+          detail: "Duplicate SQL detected",
+          payload: safety.normalizedSql,
+        });
         await input.onEvent?.("sql_blocked", stepIndex + 1, { trace: item });
         await input.onEvent?.("evidence", stepIndex + 1, evidenceItem);
         continue;
@@ -435,6 +477,12 @@ async function executeAnalysis(input: {
           value: `SQL 被策略拦截：${strategyBlockReason}`,
         };
         evidence.push(evidenceItem);
+        pushDebugLog({
+          kind: "sql_blocked",
+          title: guardedAction.title,
+          detail: strategyBlockReason,
+          payload: safety.normalizedSql,
+        });
         await input.onEvent?.("sql_blocked", stepIndex + 1, { trace: item });
         await input.onEvent?.("evidence", stepIndex + 1, evidenceItem);
         continue;
@@ -473,6 +521,12 @@ async function executeAnalysis(input: {
           value: buildEvidenceValue(safety.normalizedSql, rows),
         };
         evidence.push(evidenceItem);
+        pushDebugLog({
+          kind: "sql_result",
+          title: guardedAction.title,
+          detail: `rows=${rows.length}; durationMs=${duration}`,
+          payload: JSON.stringify(rows.slice(0, 20)),
+        });
         resultSets.push({
           title: guardedAction.title,
           sql: safety.normalizedSql,
@@ -511,6 +565,12 @@ async function executeAnalysis(input: {
           value: `SQL 执行报错：${reason}`,
         };
         evidence.push(evidenceItem);
+        pushDebugLog({
+          kind: "sql_error",
+          title: guardedAction.title,
+          detail: reason,
+          payload: safety.normalizedSql,
+        });
         if (isTimeoutError(reason)) {
           forceLightweightMode = true;
           evidence.push({
@@ -538,9 +598,9 @@ async function executeAnalysis(input: {
     }
   });
 
-  const rawSummary = llmFinalSummary ?? (await synthesizeFinalSummary(input.question, evidence, traces, datasourceNote));
+  const rawSummary = llmFinalSummary ?? (await synthesizeFinalSummary(input.question, evidence, traces, datasourceNote, pushDebugLog));
   const summary = normalizeFinalSummaryText(rawSummary);
-  const chart = await buildInsightChart(input.question, summary, resultSets);
+  const chart = llmWantsChart ? await buildInsightChart(input.question, summary, resultSets, pushDebugLog) : undefined;
   const resultTable = shouldIncludeResultTable(input.question) ? buildResultTable(resultSets) : undefined;
 
   return {
@@ -551,6 +611,7 @@ async function executeAnalysis(input: {
     chart,
     resultTable,
     sqlTraces: traces,
+    debugLogs,
   };
 }
 
@@ -563,6 +624,7 @@ async function planNextAction(input: {
   stepIndex: number;
   datasourceNote: string;
   history: Array<{ role: "user" | "assistant"; content: string }>;
+  onDebugLog?: (log: Omit<AnalysisDebugLog, "ts">) => void;
 }): Promise<PlannerAction> {
   const allTableNames = input.entities.map((e) => e.tableName).sort((a, b) => a.localeCompare(b));
   const schemaBrief = selectSchemaBriefForQuestion(input.question, input.entities).map((e) => ({
@@ -582,7 +644,7 @@ async function planNextAction(input: {
 2) add_note:
 {"action":"add_note","title":"简短标题","rationale":"为什么添加此备注（体现对用户意图理解）","note":"完整备注内容"}
 3) final_answer:
-{"action":"final_answer","summary":"完整自然语言结论，含关键证据、趋势/比较/异常/建议，必要时说明局限"}
+{"action":"final_answer","summary":"完整自然语言结论，含关键证据、趋势/比较/异常/建议，必要时说明局限","show_chart":true|false}
 
 【SQL 硬约束】
 - 只能一条完整 SELECT（允许单条 WITH ... SELECT）。
@@ -628,6 +690,15 @@ Schema总表数：${input.entities.length}
   let lastRaw = "";
 
   while (failures <= maxFormatFailures) {
+    input.onDebugLog?.({
+      kind: "llm_request",
+      title: "planner",
+      detail: failures === 0 ? "initial" : `retry_${failures}`,
+      payload: JSON.stringify([
+        { role: "system", content: plannerSystemPrompt },
+        { role: "user", content: failures === 0 ? plannerUserContext : `${plannerUserContext}\n\n上一次输出不符合协议（第 ${failures} 次失败）。请严格按以下标准重写：\n1) 只能输出一个 JSON 对象，不得有任何额外文本。\n2) action 只能是 run_sql/add_note/final_answer。\n3) run_sql 必须包含 title/rationale/sql；add_note 必须包含 title/rationale/note；final_answer 必须包含 summary 和 show_chart(boolean)。\n4) 你上一次的原始输出如下，请修正：\n${lastRaw}` },
+      ]),
+    });
     const llmRaw = await callLlm([
       {
         role: "system",
@@ -641,14 +712,26 @@ Schema总表数：${input.entities.length}
             : `${plannerUserContext}\n\n上一次输出不符合协议（第 ${failures} 次失败）。请严格按以下标准重写：`
               + "\n1) 只能输出一个 JSON 对象，不得有任何额外文本。"
               + "\n2) action 只能是 run_sql/add_note/final_answer。"
-              + "\n3) run_sql 必须包含 title/rationale/sql；add_note 必须包含 title/rationale/note；final_answer 必须包含 summary。"
+              + "\n3) run_sql 必须包含 title/rationale/sql；add_note 必须包含 title/rationale/note；final_answer 必须包含 summary 和 show_chart(boolean)。"
               + `\n4) 你上一次的原始输出如下，请修正：\n${lastRaw}`,
       },
     ]);
 
     lastRaw = (llmRaw ?? "").trim();
+    input.onDebugLog?.({
+      kind: "llm_response",
+      title: "planner",
+      detail: failures === 0 ? "initial" : `retry_${failures}`,
+      payload: lastRaw,
+    });
     const parsed = parsePlannerAction(lastRaw);
     if (parsed) return parsed;
+    input.onDebugLog?.({
+      kind: "system",
+      title: "planner_parse_failed",
+      detail: `failure_${failures + 1}`,
+      payload: lastRaw,
+    });
     failures += 1;
   }
 
@@ -664,7 +747,11 @@ function parsePlannerAction(text: string): PlannerAction | null {
     const obj = tryParsePlannerJson(candidate);
     if (!obj) continue;
     if (obj.action === "final_answer" && typeof obj.summary === "string" && obj.summary.trim()) {
-      return { action: "final_answer", summary: obj.summary.trim() };
+      return {
+        action: "final_answer",
+        summary: obj.summary.trim(),
+        showChart: parseShowChartFlag(obj),
+      };
     }
     if (
       obj.action === "add_note" &&
@@ -692,6 +779,53 @@ function parsePlannerAction(text: string): PlannerAction | null {
       };
     }
   }
+  const recovered = recoverPlannerActionFromLooseText(text);
+  if (recovered) return recovered;
+  return null;
+}
+
+function recoverPlannerActionFromLooseText(raw: string): PlannerAction | null {
+  const text = normalizeQuotes(raw);
+  const action = extractLooseJsonStringField(text, "action");
+  if (!action) return null;
+
+  if (action === "final_answer") {
+    const summary = extractLooseFinalAnswerSummary(text);
+    if (summary?.trim()) {
+      return {
+        action: "final_answer",
+        summary: summary.trim(),
+        showChart: extractLooseJsonBooleanField(text, "show_chart") ?? extractLooseJsonBooleanField(text, "showChart"),
+      };
+    }
+    return null;
+  }
+
+  if (action === "add_note") {
+    const note = extractLooseJsonStringField(text, "note");
+    if (!note?.trim()) return null;
+    const title = extractLooseJsonStringField(text, "title")?.trim() || "更新数据库备注";
+    const rationale = extractLooseJsonStringField(text, "rationale")?.trim() || "沉淀业务知识";
+    return {
+      action: "add_note",
+      title,
+      rationale,
+      note: note.trim(),
+    };
+  }
+
+  if (action === "run_sql") {
+    const sql = extractLooseJsonStringField(text, "sql");
+    if (!sql?.trim()) return null;
+    const title = extractLooseJsonStringField(text, "title")?.trim() || "SQL 分析步骤";
+    const rationale = extractLooseJsonStringField(text, "rationale")?.trim() || "按问题继续取证";
+    return {
+      action: "run_sql",
+      title,
+      rationale,
+      sql: sanitizeSql(sql),
+    };
+  }
   return null;
 }
 
@@ -700,8 +834,17 @@ async function synthesizeFinalSummary(
   evidence: Array<{ label: string; value: string }>,
   traces: AnalysisPlanStep[],
   datasourceNote: string,
+  onDebugLog?: (log: Omit<AnalysisDebugLog, "ts">) => void,
 ) {
   try {
+    const reqPayload = `问题：${question}\n证据：${JSON.stringify(evidence)}\n步骤：${JSON.stringify(
+      traces.map((t) => ({ title: t.title, rationale: t.rationale })),
+    )}\n数据库备注：${datasourceNote || "（空）"}`;
+    onDebugLog?.({
+      kind: "llm_request",
+      title: "summary",
+      payload: reqPayload,
+    });
     const out = await callLlm([
       {
         role: "system",
@@ -709,11 +852,14 @@ async function synthesizeFinalSummary(
       },
       {
         role: "user",
-        content: `问题：${question}\n证据：${JSON.stringify(evidence)}\n步骤：${JSON.stringify(
-          traces.map((t) => ({ title: t.title, rationale: t.rationale })),
-        )}\n数据库备注：${datasourceNote || "（空）"}`,
+        content: reqPayload,
       },
     ]);
+    onDebugLog?.({
+      kind: "llm_response",
+      title: "summary",
+      payload: out,
+    });
     const summary = out.trim();
     if (summary) return summary;
   } catch {
@@ -731,6 +877,7 @@ async function buildInsightChart(
   question: string,
   summary: string,
   resultSets: Array<{ title: string; sql: string; rows: Array<Record<string, unknown>> }>,
+  onDebugLog?: (log: Omit<AnalysisDebugLog, "ts">) => void,
 ): Promise<InsightChart | undefined> {
   const candidates = resultSets
     .map((s) => ({
@@ -744,6 +891,12 @@ async function buildInsightChart(
   if (!candidates.length) return undefined;
 
   try {
+    const reqPayload = `问题：${question}\n结论：${summary}\n可用数据集：${JSON.stringify(candidates)}`;
+    onDebugLog?.({
+      kind: "llm_request",
+      title: "chart_planner",
+      payload: reqPayload,
+    });
     const raw = await callLlm([
       {
         role: "system",
@@ -755,9 +908,14 @@ async function buildInsightChart(
       },
       {
         role: "user",
-        content: `问题：${question}\n结论：${summary}\n可用数据集：${JSON.stringify(candidates)}`,
+        content: reqPayload,
       },
     ]);
+    onDebugLog?.({
+      kind: "llm_response",
+      title: "chart_planner",
+      payload: raw,
+    });
     const parsed = parseChartAction(raw);
     if (!parsed || parsed.action === "none") return undefined;
     if (!validateChart(parsed.chart)) return undefined;
@@ -806,6 +964,11 @@ function validateChart(chart: InsightChart) {
 function shouldIncludeResultTable(question: string) {
   const q = question.toLowerCase();
   return /列出|全部|完整|名单|清单|list|show all|all users/.test(q);
+}
+
+function shouldRequestChartFromQuestion(question: string) {
+  const q = question.toLowerCase();
+  return /图表|可视化|画图|饼图|柱状图|折线图|line chart|bar chart|pie chart|chart/.test(q);
 }
 
 function isPlannerFallbackSummary(summary: string) {
@@ -906,13 +1069,53 @@ function normalizeFinalSummaryText(text: string) {
 function extractLooseFinalAnswerSummary(raw: string) {
   const actionMatch = raw.match(/"action"\s*:\s*"final_answer"/i);
   if (!actionMatch) return null;
-  const summaryStart = raw.search(/"summary"\s*:\s*"/i);
+  const summaryStart = raw.search(/"summary"\s*:\s*/i);
   if (summaryStart < 0) return null;
 
-  const prefixMatch = raw.slice(summaryStart).match(/"summary"\s*:\s*"/i);
+  const prefixMatch = raw.slice(summaryStart).match(/"summary"\s*:\s*/i);
   if (!prefixMatch) return null;
   const start = summaryStart + prefixMatch[0].length;
+  const tail = raw.slice(start).trim();
+  if (!tail) return null;
 
+  // 优先按 JSON 字符串边界提取；若模型引号不规范，退化为“吃到结尾对象前”。
+  if (tail.startsWith("\"")) {
+    const endQuoteIndex = findLikelyClosingQuoteIndex(tail);
+    const quoted = endQuoteIndex > 0 ? tail.slice(1, endQuoteIndex) : tail.slice(1);
+    return unescapeLooseJsonString(quoted).trim() || null;
+  }
+
+  return tail
+    .replace(/}\s*$/, "")
+    .replace(/,\s*$/, "")
+    .trim() || null;
+}
+
+function findLikelyClosingQuoteIndex(text: string) {
+  let escaped = false;
+  for (let i = text.length - 1; i >= 1; i--) {
+    const ch = text[i];
+    if (ch !== "\"") continue;
+    let slashCount = 0;
+    for (let j = i - 1; j >= 0 && text[j] === "\\"; j--) slashCount += 1;
+    escaped = slashCount % 2 === 1;
+    if (!escaped) return i;
+  }
+  return -1;
+}
+
+function unescapeLooseJsonString(value: string) {
+  return value
+    .replace(/\\n/g, "\n")
+    .replace(/\\t/g, "\t")
+    .replace(/\\"/g, "\"")
+    .replace(/\\\\/g, "\\");
+}
+
+function extractLooseJsonStringField(raw: string, fieldName: string) {
+  const fieldMatch = new RegExp(`"${fieldName}"\\s*:\\s*"`, "i").exec(raw);
+  if (!fieldMatch || fieldMatch.index < 0) return null;
+  const start = fieldMatch.index + fieldMatch[0].length;
   let escaped = false;
   let out = "";
   for (let i = start; i < raw.length; i++) {
@@ -928,12 +1131,29 @@ function extractLooseFinalAnswerSummary(raw: string) {
       escaped = true;
       continue;
     }
-    if (ch === "\"") {
-      return out;
-    }
+    if (ch === "\"") return out;
     out += ch;
   }
   return out || null;
+}
+
+function extractLooseJsonBooleanField(raw: string, fieldName: string) {
+  const fieldMatch = new RegExp(`"${fieldName}"\\s*:\\s*(true|false)`, "i").exec(raw);
+  if (!fieldMatch?.[1]) return undefined;
+  return fieldMatch[1].toLowerCase() === "true";
+}
+
+function parseShowChartFlag(obj: unknown) {
+  if (!obj || typeof obj !== "object") return undefined;
+  const record = obj as Record<string, unknown>;
+  if (typeof record.show_chart === "boolean") return record.show_chart;
+  if (typeof record.showChart === "boolean") return record.showChart;
+  return undefined;
+}
+
+function trimLogText(text: string, maxLen: number) {
+  if (text.length <= maxLen) return text;
+  return `${text.slice(0, maxLen)}... [truncated ${text.length - maxLen} chars]`;
 }
 
 function summarizeTitle(question: string) {

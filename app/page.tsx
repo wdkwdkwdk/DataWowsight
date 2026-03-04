@@ -2,7 +2,7 @@
 
 import dynamic from "next/dynamic";
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Download, FileJson2, FileSpreadsheet } from "lucide-react";
+import { Download, FileJson2, FileSpreadsheet, ScrollText, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -47,6 +47,15 @@ type Report = {
     rows: Array<Record<string, unknown>>;
   };
   sqlTraces: SqlTrace[];
+  debugLogs?: DebugLog[];
+};
+
+type DebugLog = {
+  ts: string;
+  kind: "llm_request" | "llm_response" | "sql_started" | "sql_result" | "sql_blocked" | "sql_error" | "system";
+  title: string;
+  detail?: string;
+  payload?: string;
 };
 
 type InsightChart = {
@@ -74,6 +83,7 @@ type ChatMessage = {
 };
 
 const ReactECharts = dynamic(() => import("echarts-for-react"), { ssr: false });
+const APP_VERSION = "v1.0.31";
 
 export default function Home() {
   const [mounted, setMounted] = useState(false);
@@ -94,6 +104,14 @@ export default function Home() {
   const [showAddDb, setShowAddDb] = useState(false);
   const [dbName, setDbName] = useState("");
   const [dbUri, setDbUri] = useState("");
+  const [dbConnMode, setDbConnMode] = useState<"url" | "params">("url");
+  const [dbParamKind, setDbParamKind] = useState<"postgres" | "mysql">("postgres");
+  const [dbParamHost, setDbParamHost] = useState("");
+  const [dbParamPort, setDbParamPort] = useState("");
+  const [dbParamDatabase, setDbParamDatabase] = useState("");
+  const [dbParamUser, setDbParamUser] = useState("");
+  const [dbParamPassword, setDbParamPassword] = useState("");
+  const [dbParamSsl, setDbParamSsl] = useState(true);
   const [dbCreateStatus, setDbCreateStatus] = useState("");
   const [creatingConversation, setCreatingConversation] = useState(false);
   const [showNotes, setShowNotes] = useState(false);
@@ -108,6 +126,7 @@ export default function Home() {
   const [renameDraft, setRenameDraft] = useState("");
   const [renameBusy, setRenameBusy] = useState(false);
   const [openExportForMessageId, setOpenExportForMessageId] = useState<string | null>(null);
+  const [logViewer, setLogViewer] = useState<{ messageId: string; logs: DebugLog[] } | null>(null);
 
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const listRef = useRef<HTMLDivElement | null>(null);
@@ -171,6 +190,7 @@ export default function Home() {
 
   useEffect(() => {
     setMounted(true);
+    console.info(`[DataWowsight] ${APP_VERSION}`);
   }, []);
 
   useEffect(() => {
@@ -286,10 +306,22 @@ export default function Home() {
     setStatusMessage("");
 
     try {
+      const connectionUri = buildConnectionUri({
+        mode: dbConnMode,
+        uri: dbUri,
+        kind: dbParamKind,
+        host: dbParamHost,
+        port: dbParamPort,
+        database: dbParamDatabase,
+        user: dbParamUser,
+        password: dbParamPassword,
+        ssl: dbParamSsl,
+      });
+
       const res = await fetch("/api/connections", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: dbName, uri: dbUri }),
+        body: JSON.stringify({ name: dbName, uri: connectionUri }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Create connection failed");
@@ -306,6 +338,14 @@ export default function Home() {
       setShowAddDb(false);
       setDbName("");
       setDbUri("");
+      setDbConnMode("url");
+      setDbParamKind("postgres");
+      setDbParamHost("");
+      setDbParamPort("");
+      setDbParamDatabase("");
+      setDbParamUser("");
+      setDbParamPassword("");
+      setDbParamSsl(true);
       setStatusMessage(`数据库已就绪（${data.datasource.name}），扫描到 ${introspectData.tables ?? 0} 张表/视图。`);
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : "创建数据库失败");
@@ -726,6 +766,7 @@ export default function Home() {
             >
               DataWowsight
             </button>
+            <span className="app-version-badge">{APP_VERSION}</span>
             {pageView === "chat" && (
               <>
                 <span className="crumb-sep">/</span>
@@ -936,7 +977,20 @@ export default function Home() {
 
             {currentMessages.map((m) => (
               <article key={m.id} className={`msg ${m.role}`}>
-                <div className="msg-role">{m.role === "user" ? "You" : "Agent"}</div>
+                <div className="msg-role-row">
+                  <div className="msg-role">{m.role === "user" ? "You" : "Agent"}</div>
+                  {m.role === "assistant" && (m.metaJson?.report?.debugLogs?.length ?? 0) > 0 && (
+                    <button
+                      className="msg-log-btn"
+                      type="button"
+                      aria-label="Open run logs"
+                      title="查看运行日志"
+                      onClick={() => setLogViewer({ messageId: m.id, logs: m.metaJson?.report?.debugLogs ?? [] })}
+                    >
+                      <ScrollText size={13} />
+                    </button>
+                  )}
+                </div>
                 <div className="msg-body">
                   {m.content ? (
                     m.role === "assistant" ? (
@@ -1129,13 +1183,102 @@ export default function Home() {
                 placeholder="连接名称"
                 required
               />
-              <textarea
-                value={dbUri}
-                onChange={(e) => setDbUri(e.target.value)}
-                placeholder="postgres:// / mysql:// / sqlite://..."
-                rows={4}
-                required
-              />
+              <div className="conn-mode-tabs">
+                <button
+                  type="button"
+                  className={`conn-mode-tab ${dbConnMode === "url" ? "active" : ""}`}
+                  onClick={() => setDbConnMode("url")}
+                >
+                  URL
+                </button>
+                <button
+                  type="button"
+                  className={`conn-mode-tab ${dbConnMode === "params" ? "active" : ""}`}
+                  onClick={() => setDbConnMode("params")}
+                >
+                  参数
+                </button>
+              </div>
+              {dbConnMode === "url" ? (
+                <textarea
+                  value={dbUri}
+                  onChange={(e) => setDbUri(e.target.value)}
+                  placeholder="postgres:// / mysql:// / sqlite://..."
+                  rows={4}
+                  required
+                />
+              ) : (
+                <div className="conn-param-grid">
+                  <label className="conn-field full">
+                    <span>数据库类型</span>
+                    <select value={dbParamKind} onChange={(e) => setDbParamKind(e.target.value as "postgres" | "mysql")}>
+                      <option value="postgres">PostgreSQL</option>
+                      <option value="mysql">MySQL</option>
+                    </select>
+                  </label>
+                  <label className="conn-field">
+                    <span>端点（URL）</span>
+                    <input
+                      value={dbParamHost}
+                      onChange={(e) => setDbParamHost(e.target.value)}
+                      placeholder="db.example.com"
+                      required
+                    />
+                  </label>
+                  <label className="conn-field">
+                    <span>端口</span>
+                    <input
+                      value={dbParamPort}
+                      onChange={(e) => setDbParamPort(e.target.value)}
+                      placeholder={dbParamKind === "postgres" ? "5432" : "3306"}
+                      inputMode="numeric"
+                      required
+                    />
+                  </label>
+                  <label className="conn-field">
+                    <span>数据库</span>
+                    <input
+                      value={dbParamDatabase}
+                      onChange={(e) => setDbParamDatabase(e.target.value)}
+                      placeholder="database_name"
+                      required
+                    />
+                  </label>
+                  <label className="conn-field">
+                    <span>用户名</span>
+                    <input
+                      value={dbParamUser}
+                      onChange={(e) => setDbParamUser(e.target.value)}
+                      placeholder="username"
+                      required
+                    />
+                  </label>
+                  <label className="conn-field full">
+                    <span>密码</span>
+                    <input
+                      type="password"
+                      value={dbParamPassword}
+                      onChange={(e) => setDbParamPassword(e.target.value)}
+                      placeholder="password"
+                    />
+                  </label>
+                  <label className="conn-field full conn-toggle">
+                    <span className="conn-toggle-label">
+                      <strong>SSL</strong>
+                      <em>{dbParamSsl ? "已启用加密连接" : "未启用加密连接"}</em>
+                    </span>
+                    <button
+                      type="button"
+                      className={`switch ${dbParamSsl ? "on" : ""}`}
+                      onClick={() => setDbParamSsl((v) => !v)}
+                      aria-pressed={dbParamSsl}
+                      aria-label="Toggle SSL"
+                    >
+                      <span className="switch-knob" />
+                    </button>
+                  </label>
+                </div>
+              )}
               {dbCreateStatus && <div className="status-msg">{dbCreateStatus}</div>}
               <div className="modal-actions">
                 <button className="btn ghost" onClick={() => setShowAddDb(false)} type="button">
@@ -1146,6 +1289,34 @@ export default function Home() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+      {logViewer && (
+        <div className="modal-mask" onClick={() => setLogViewer(null)}>
+          <div className="modal log-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="log-modal-head">
+              <h3>Run Logs</h3>
+              <button className="log-close-btn" type="button" onClick={() => setLogViewer(null)} aria-label="Close logs">
+                <X size={14} />
+              </button>
+            </div>
+            <div className="log-modal-body">
+              <div className="log-list">
+                {logViewer.logs.map((log, i) => (
+                  <div className="log-item" key={`${logViewer.messageId}-log-${i}`}>
+                    <div className="log-head">
+                      <span className={`log-kind k-${log.kind}`}>{log.kind}</span>
+                      <span className="log-title">{log.title}</span>
+                      <span className="log-time">{formatLogTime(log.ts)}</span>
+                    </div>
+                    {log.detail && <div className="log-detail">{log.detail}</div>}
+                    {log.payload && <pre className="log-payload">{log.payload}</pre>}
+                  </div>
+                ))}
+                {logViewer.logs.length === 0 && <div className="empty">暂无日志</div>}
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -1258,6 +1429,55 @@ function formatCreatedAtUtc(iso: string) {
   const h = String(d.getUTCHours()).padStart(2, "0");
   const min = String(d.getUTCMinutes()).padStart(2, "0");
   return `${y}-${m}-${day} ${h}:${min} UTC`;
+}
+
+function formatLogTime(iso: string) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const h = String(d.getHours()).padStart(2, "0");
+  const m = String(d.getMinutes()).padStart(2, "0");
+  const s = String(d.getSeconds()).padStart(2, "0");
+  return `${h}:${m}:${s}`;
+}
+
+function buildConnectionUri(input: {
+  mode: "url" | "params";
+  uri: string;
+  kind: "postgres" | "mysql";
+  host: string;
+  port: string;
+  database: string;
+  user: string;
+  password: string;
+  ssl: boolean;
+}) {
+  if (input.mode === "url") {
+    const uri = input.uri.trim();
+    if (!uri) throw new Error("请填写连接 URL");
+    return uri;
+  }
+
+  const host = input.host.trim();
+  const port = input.port.trim();
+  const database = input.database.trim();
+  const user = input.user.trim();
+  if (!host || !port || !database || !user) {
+    throw new Error("请完整填写连接参数");
+  }
+  if (!/^\d+$/.test(port)) {
+    throw new Error("端口必须是数字");
+  }
+
+  const protocol = input.kind === "postgres" ? "postgres" : "mysql";
+  const normalizedHost = host.replace(/^\w+:\/\//, "");
+  const userInfo = `${encodeURIComponent(user)}:${encodeURIComponent(input.password ?? "")}`;
+  const dbPath = encodeURIComponent(database);
+  const sslQuery = input.ssl
+    ? input.kind === "postgres"
+      ? "uselibpqcompat=true&sslmode=require"
+      : "ssl=true"
+    : "";
+  return `${protocol}://${userInfo}@${normalizedHost}:${port}/${dbPath}${sslQuery ? `?${sslQuery}` : ""}`;
 }
 
 function buildChartOption(chart: InsightChart) {
