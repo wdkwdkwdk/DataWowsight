@@ -1574,7 +1574,7 @@ function getSqlStrategyBlockReason(sql: string, dbKind: DbKind, forceLightweight
 }
 
 function isTimeoutError(reason: string) {
-  return /maximum statement execution time exceeded|statement timeout|query execution was interrupted|timeout/i.test(reason);
+  return /maximum statement execution time exceeded|statement timeout|query execution was interrupted|query[_\s-]?timeout|canceling statement due to user request|timeout/i.test(reason);
 }
 
 function buildTimeoutOptimizationHint(

@@ -4,7 +4,7 @@ export const ANALYSIS_DEFAULTS = {
   schemaLlmMaxTables: 8,
   maxSqlPerRun: 8,
   maxRowsPerQuery: 200,
-  queryTimeoutMs: 120_000,
+  queryTimeoutMs: 100_000,
   runBudgetMs: 120_000,
   llmTimeoutMs: 8_000,
   defaultRecentDays: 30,

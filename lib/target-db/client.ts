@@ -1,5 +1,6 @@
 import mysql from "mysql2/promise";
 import { Client as PgClient } from "pg";
+import { ANALYSIS_DEFAULTS } from "../config";
 import type { DbKind } from "../types";
 
 type QueryResult = { rows: Record<string, unknown>[] };
@@ -59,7 +60,10 @@ class MysqlTargetClient implements TargetDbClient {
   }
 
   async query<T>(sqlText: string): Promise<T[]> {
-    const [rows] = await this.client.query(sqlText);
+    const [rows] = await this.client.query({
+      sql: sqlText,
+      timeout: ANALYSIS_DEFAULTS.queryTimeoutMs,
+    });
     return rows as T[];
   }
 
@@ -78,12 +82,15 @@ class SqliteTargetClient implements TargetDbClient {
   }
 
   async query<T>(sqlText: string): Promise<T[]> {
-    return new Promise<T[]>((resolve, reject) => {
-      this.db.all(sqlText, [], (err, rows) => {
-        if (err) return reject(err);
-        resolve((rows ?? []) as T[]);
-      });
-    });
+    return withPromiseTimeout(
+      new Promise<T[]>((resolve, reject) => {
+        this.db.all(sqlText, [], (err, rows) => {
+          if (err) return reject(err);
+          resolve((rows ?? []) as T[]);
+        });
+      }),
+      ANALYSIS_DEFAULTS.queryTimeoutMs,
+    );
   }
 
   async close() {
@@ -116,6 +123,7 @@ export async function createTargetDbClient(uri: string): Promise<TargetDbClient>
   if (kind === "postgres") {
     const client = new PgClient({ connectionString: uri });
     await client.connect();
+    await client.query(`set statement_timeout = ${ANALYSIS_DEFAULTS.queryTimeoutMs}`);
     return new PostgresTargetClient(client);
   }
 
@@ -159,5 +167,19 @@ async function loadSqlite3(): Promise<Sqlite3Module> {
     return (mod.default ?? mod) as Sqlite3Module;
   } catch {
     throw new Error("SQLite driver is unavailable in this deployment. Use Postgres/MySQL or deploy with sqlite3 support.");
+  }
+}
+
+async function withPromiseTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timeoutRef: ReturnType<typeof setTimeout> | null = null;
+  const timeoutPromise = new Promise<T>((_, reject) => {
+    timeoutRef = setTimeout(() => {
+      reject(new Error(`statement timeout after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeoutRef) clearTimeout(timeoutRef);
   }
 }
