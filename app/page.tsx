@@ -808,7 +808,7 @@ export default function Home() {
   }
 
   async function pollRunUntilDone(runId: string, assistantId: string, conversationId: string) {
-    for (let i = 0; i < 40; i++) {
+    for (let i = 0; i < 180; i++) {
       await wait(1200);
       const res = await fetch(`/api/analysis/runs/${runId}?resume=1`);
       const data = await res.json();

@@ -319,6 +319,15 @@ export async function updateRunStatus(runId: string, status: string, resultJson?
   `;
 }
 
+export async function touchRun(runId: string) {
+  await ensureSchema();
+  await sql`
+    update analysis_runs
+    set updated_at = now()
+    where id = ${runId}
+  `;
+}
+
 export async function getRun(runId: string) {
   await ensureSchema();
   const res = await sql`select * from analysis_runs where id = ${runId} limit 1`;

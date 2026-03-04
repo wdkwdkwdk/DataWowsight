@@ -16,6 +16,7 @@ import {
   insertSqlAuditLog,
   insertSqlStep,
   listMessages,
+  touchRun,
   touchConversation,
   updateRunStatus,
   upsertEntityAnnotation,
@@ -83,7 +84,7 @@ type ProgressState = {
   detail?: string;
 };
 
-const activeRunWorkers = new Set<string>();
+const activeRunWorkers = new Map<string, { startedAt: number; heartbeatAt: number }>();
 
 export async function runAnalysisQuery(input: QueryRequest) {
   const datasource = await getDatasource(input.connectionId);
@@ -181,7 +182,19 @@ async function executeAnalysisInBackground(input: {
   if (activeRunWorkers.has(input.runId)) {
     return;
   }
-  activeRunWorkers.add(input.runId);
+  const now = Date.now();
+  activeRunWorkers.set(input.runId, { startedAt: now, heartbeatAt: now });
+  let beatCount = 0;
+  const heartbeatTimer = setInterval(() => {
+    const worker = activeRunWorkers.get(input.runId);
+    if (!worker) return;
+    worker.heartbeatAt = Date.now();
+    activeRunWorkers.set(input.runId, worker);
+    beatCount += 1;
+    if (beatCount % 3 === 0) {
+      void touchRun(input.runId);
+    }
+  }, 2_000);
   try {
     const report = await executeAnalysis({
       runId: input.runId,
@@ -270,6 +283,7 @@ async function executeAnalysisInBackground(input: {
       error: message,
     });
   } finally {
+    clearInterval(heartbeatTimer);
     activeRunWorkers.delete(input.runId);
   }
 }
@@ -286,8 +300,12 @@ export async function tryResumeRun(
   if (run.status !== "running") {
     return { resumed: false, reason: "not_running" };
   }
-  if (activeRunWorkers.has(runId)) {
-    return { resumed: false, reason: "already_running" };
+  const currentWorker = activeRunWorkers.get(runId);
+  if (currentWorker) {
+    if (Date.now() - currentWorker.heartbeatAt < staleMs) {
+      return { resumed: false, reason: "already_running" };
+    }
+    activeRunWorkers.delete(runId);
   }
   const lastUpdateAt = new Date(run.updatedAt).getTime();
   if (Number.isFinite(lastUpdateAt) && Date.now() - lastUpdateAt < staleMs) {
