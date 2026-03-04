@@ -810,13 +810,17 @@ export default function Home() {
   async function pollRunUntilDone(runId: string, assistantId: string, conversationId: string) {
     for (let i = 0; i < 40; i++) {
       await wait(1200);
-      const res = await fetch(`/api/analysis/runs/${runId}`);
+      const res = await fetch(`/api/analysis/runs/${runId}?resume=1`);
       const data = await res.json();
       if (!res.ok) {
         setStatusMessage(data.error || "获取运行状态失败");
         return;
       }
       const run = data.run;
+      const resume = data.resume as { resumed?: boolean; reason?: string } | undefined;
+      if (resume?.resumed) {
+        setRunStatus("检测到任务中断，正在继续执行...");
+      }
       if (run.status === "completed") {
         const report = run.result?.report ?? (run.result as Report | undefined);
         if (report) {

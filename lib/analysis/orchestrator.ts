@@ -82,6 +82,8 @@ type ProgressState = {
   detail?: string;
 };
 
+const activeRunWorkers = new Set<string>();
+
 export async function runAnalysisQuery(input: QueryRequest) {
   const datasource = await getDatasource(input.connectionId);
   if (!datasource) {
@@ -175,6 +177,10 @@ async function executeAnalysisInBackground(input: {
   llmModel?: string;
   context: Record<string, unknown>;
 }) {
+  if (activeRunWorkers.has(input.runId)) {
+    return;
+  }
+  activeRunWorkers.add(input.runId);
   try {
     const report = await executeAnalysis({
       runId: input.runId,
@@ -262,7 +268,52 @@ async function executeAnalysisInBackground(input: {
       },
       error: message,
     });
+  } finally {
+    activeRunWorkers.delete(input.runId);
   }
+}
+
+export async function tryResumeRun(
+  runId: string,
+  options?: { staleMs?: number },
+): Promise<{ resumed: boolean; reason: "resumed" | "not_found" | "not_running" | "not_stale" | "already_running" | "missing_context" }> {
+  const staleMs = options?.staleMs ?? 12_000;
+  const run = await getRun(runId);
+  if (!run) {
+    return { resumed: false, reason: "not_found" };
+  }
+  if (run.status !== "running") {
+    return { resumed: false, reason: "not_running" };
+  }
+  if (activeRunWorkers.has(runId)) {
+    return { resumed: false, reason: "already_running" };
+  }
+  const lastUpdateAt = new Date(run.updatedAt).getTime();
+  if (Number.isFinite(lastUpdateAt) && Date.now() - lastUpdateAt < staleMs) {
+    return { resumed: false, reason: "not_stale" };
+  }
+
+  const session = await getSession(run.sessionId);
+  if (!session) {
+    return { resumed: false, reason: "missing_context" };
+  }
+  const datasource = await getDatasource(session.connectionId);
+  if (!datasource) {
+    return { resumed: false, reason: "missing_context" };
+  }
+
+  void executeAnalysisInBackground({
+    runId: run.id,
+    conversationId: run.sessionId,
+    sessionId: run.sessionId,
+    connectionId: datasource.id,
+    uri: datasource.uri,
+    dbKind: datasource.kind,
+    question: run.question,
+    context: session.context,
+  });
+
+  return { resumed: true, reason: "resumed" };
 }
 
 async function executeAnalysis(input: {
