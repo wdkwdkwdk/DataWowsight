@@ -17,6 +17,9 @@ export async function GET(_: Request, context: { params: Promise<{ id: string }>
   const encoder = new TextEncoder();
   let closed = false;
   let timer: ReturnType<typeof setInterval> | null = null;
+  let lastSendAt = Date.now();
+  let polling = false;
+  const KEEPALIVE_MS = 5_000;
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -26,6 +29,7 @@ export async function GET(_: Request, context: { params: Promise<{ id: string }>
         if (closed) return false;
         try {
           controller.enqueue(encoder.encode(toSseEvent(eventName, data)));
+          lastSendAt = Date.now();
           return true;
         } catch {
           closed = true;
@@ -50,9 +54,17 @@ export async function GET(_: Request, context: { params: Promise<{ id: string }>
       safeEnqueue("connected", { runId });
 
       timer = setInterval(async () => {
-        if (closed) return;
+        if (closed || polling) return;
+        polling = true;
 
         try {
+          if (Date.now() - lastSendAt >= KEEPALIVE_MS) {
+            if (!safeEnqueue("ping", { ts: new Date().toISOString() })) {
+              safeClose();
+              return;
+            }
+          }
+
           const events = await listRunEvents(runId, lastEventId > 0 ? lastEventId : undefined);
           for (const ev of events) {
             lastEventId = ev.id;
@@ -72,6 +84,8 @@ export async function GET(_: Request, context: { params: Promise<{ id: string }>
             error: error instanceof Error ? error.message : "stream_error",
           });
           safeClose();
+        } finally {
+          polling = false;
         }
       }, 800);
     },
