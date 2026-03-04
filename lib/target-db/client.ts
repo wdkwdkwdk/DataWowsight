@@ -1,9 +1,20 @@
 import mysql from "mysql2/promise";
 import { Client as PgClient } from "pg";
-import sqlite3 from "sqlite3";
 import type { DbKind } from "../types";
 
 type QueryResult = { rows: Record<string, unknown>[] };
+type Sqlite3Module = {
+  OPEN_READONLY: number;
+  Database: new (
+    filename: string,
+    mode: number,
+    callback?: (err: Error | null) => void,
+  ) => SqliteDatabaseLike;
+};
+type SqliteDatabaseLike = {
+  all: (sql: string, params: unknown[], callback: (err: Error | null, rows: unknown[]) => void) => void;
+  close: (callback: (err: Error | null) => void) => void;
+};
 
 export interface TargetDbClient {
   kind: DbKind;
@@ -60,7 +71,7 @@ class MysqlTargetClient implements TargetDbClient {
 class SqliteTargetClient implements TargetDbClient {
   kind: DbKind = "sqlite";
 
-  constructor(private db: sqlite3.Database) {}
+  constructor(private db: SqliteDatabaseLike) {}
 
   async testReadOnly() {
     await this.query("select 1");
@@ -113,8 +124,9 @@ export async function createTargetDbClient(uri: string): Promise<TargetDbClient>
     return new MysqlTargetClient(client);
   }
 
+  const sqlite3 = await loadSqlite3();
   const filePath = parseSqlitePath(uri);
-  const db = await new Promise<sqlite3.Database>((resolve, reject) => {
+  const db = await new Promise<SqliteDatabaseLike>((resolve, reject) => {
     const mode = sqlite3.OPEN_READONLY;
     const instance = new sqlite3.Database(filePath, mode, (err) => {
       if (err) return reject(err);
@@ -139,4 +151,13 @@ export async function runQueryWithTimeout(uri: string, sqlText: string): Promise
     const rows = await client.query(sqlText);
     return { rows };
   });
+}
+
+async function loadSqlite3(): Promise<Sqlite3Module> {
+  try {
+    const mod = (await import("sqlite3")) as unknown as { default?: Sqlite3Module } & Sqlite3Module;
+    return (mod.default ?? mod) as Sqlite3Module;
+  } catch {
+    throw new Error("SQLite driver is unavailable in this deployment. Use Postgres/MySQL or deploy with sqlite3 support.");
+  }
 }
