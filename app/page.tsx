@@ -100,6 +100,11 @@ export default function Home() {
   const [globalLoading, setGlobalLoading] = useState(false);
   const [runStatus, setRunStatus] = useState("");
   const [statusMessage, setStatusMessage] = useState("");
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authEnabled, setAuthEnabled] = useState(false);
+  const [authenticated, setAuthenticated] = useState(false);
+  const [accessPassword, setAccessPassword] = useState("");
+  const [authError, setAuthError] = useState("");
 
   const [showAddDb, setShowAddDb] = useState(false);
   const [dbName, setDbName] = useState("");
@@ -140,6 +145,7 @@ export default function Home() {
     () => connections.find((c) => c.id === selectedConnectionId),
     [connections, selectedConnectionId],
   );
+  const authReady = !authLoading && (!authEnabled || authenticated);
 
   const loadConnections = useCallback(async () => {
     setConnectionsLoading(true);
@@ -194,11 +200,34 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    if (!authReady) return;
     void loadConnections();
     return () => {
       sseRef.current?.close();
     };
-  }, [loadConnections]);
+  }, [authReady, loadConnections]);
+
+  const refreshAuthStatus = useCallback(async () => {
+    const res = await fetch("/api/auth/status", { cache: "no-store" });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Auth status failed");
+    setAuthEnabled(Boolean(data.enabled));
+    setAuthenticated(Boolean(data.authenticated));
+  }, []);
+
+  useEffect(() => {
+    void (async () => {
+      setAuthLoading(true);
+      try {
+        await refreshAuthStatus();
+      } catch {
+        setAuthEnabled(false);
+        setAuthenticated(true);
+      } finally {
+        setAuthLoading(false);
+      }
+    })();
+  }, [refreshAuthStatus]);
 
   useEffect(() => {
     if (!selectedConnectionId) return;
@@ -748,6 +777,65 @@ export default function Home() {
             <div className="db-card loading"><div className="skeleton s1" /><div className="skeleton s2" /><div className="skeleton s3" /></div>
             <div className="db-card loading"><div className="skeleton s1" /><div className="skeleton s2" /><div className="skeleton s3" /></div>
           </section>
+        </main>
+      </div>
+    );
+  }
+
+  if (authLoading) {
+    return (
+      <div className="claude-shell">
+        <main className="home-main auth-gate-shell">
+          <div className="auth-card">
+            <h2>加载中...</h2>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
+  if (authEnabled && !authenticated) {
+    return (
+      <div className="claude-shell">
+        <main className="home-main auth-gate-shell">
+          <div className="auth-card">
+            <h2>Enter Password</h2>
+            <p>此页面已启用访问密码，请先验证。</p>
+            <form
+              className="auth-form"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void (async () => {
+                  setAuthError("");
+                  const res = await fetch("/api/auth/login", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ password: accessPassword }),
+                  });
+                  const data = await res.json();
+                  if (!res.ok) {
+                    setAuthError(data.error || "验证失败");
+                    return;
+                  }
+                  setAccessPassword("");
+                  await refreshAuthStatus();
+                })();
+              }}
+            >
+              <input
+                type="password"
+                value={accessPassword}
+                onChange={(e) => setAccessPassword(e.target.value)}
+                placeholder="Password"
+                autoFocus
+                required
+              />
+              {authError && <div className="status-msg">{authError}</div>}
+              <button className="btn" type="submit" disabled={!accessPassword.trim()}>
+                Unlock
+              </button>
+            </form>
+          </div>
         </main>
       </div>
     );

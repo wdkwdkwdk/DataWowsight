@@ -321,7 +321,7 @@ async function executeAnalysis(input: {
         const incoming = guardedAction.note.trim();
         if (!incoming) continue;
         const before = datasourceNote;
-        const note = mergeDatasourceNote(datasourceNote, incoming);
+        const note = incoming;
         await upsertEntityAnnotation({
           datasourceId: input.connectionId,
           entityType: "datasource",
@@ -333,7 +333,7 @@ async function executeAnalysis(input: {
         noteUpdatedInRun = noteUpdatedInRun || changed;
         const evidenceItem = {
           label: guardedAction.title || "更新数据库备注",
-          value: changed ? `备注已新增：${incoming.slice(0, 180)}` : `备注已存在：${incoming.slice(0, 180)}`,
+          value: changed ? `备注已更新：${incoming.slice(0, 180)}` : `备注未变化`,
         };
         evidence.push(evidenceItem);
         await input.onProgress?.({
@@ -642,7 +642,7 @@ async function planNextAction(input: {
 1) run_sql:
 {"action":"run_sql","title":"short_english_title","rationale":"one-sentence why this SQL is necessary and how it serves user intent","sql":"SELECT ..."}
 2) add_note:
-{"action":"add_note","title":"简短标题","rationale":"为什么添加此备注（体现对用户意图理解）","note":"完整备注内容"}
+{"action":"add_note","title":"简短标题","rationale":"为什么编辑此备注（体现对用户意图理解）","note":"编辑后的完整备注全文（不是增量片段）"}
 3) final_answer:
 {"action":"final_answer","summary":"完整自然语言结论，含关键证据、趋势/比较/异常/建议，必要时说明局限","show_chart":true|false}
 
@@ -677,6 +677,7 @@ async function planNextAction(input: {
 数据库方言：${input.dbKind}
 当前步数：${input.stepIndex + 1}
 数据库备注：${input.datasourceNote || "（空）"}
+当前数据库原始备注全文（编辑 add_note 时必须基于此内容改写并输出完整新版本）：${input.datasourceNote || "（空）"}
 历史消息：${JSON.stringify(input.history)}
 全量表名：${JSON.stringify(allTableNames)}
 可用Schema：${JSON.stringify(schemaBrief)}
@@ -696,7 +697,7 @@ Schema总表数：${input.entities.length}
       detail: failures === 0 ? "initial" : `retry_${failures}`,
       payload: JSON.stringify([
         { role: "system", content: plannerSystemPrompt },
-        { role: "user", content: failures === 0 ? plannerUserContext : `${plannerUserContext}\n\n上一次输出不符合协议（第 ${failures} 次失败）。请严格按以下标准重写：\n1) 只能输出一个 JSON 对象，不得有任何额外文本。\n2) action 只能是 run_sql/add_note/final_answer。\n3) run_sql 必须包含 title/rationale/sql；add_note 必须包含 title/rationale/note；final_answer 必须包含 summary 和 show_chart(boolean)。\n4) 你上一次的原始输出如下，请修正：\n${lastRaw}` },
+        { role: "user", content: failures === 0 ? plannerUserContext : `${plannerUserContext}\n\n上一次输出不符合协议（第 ${failures} 次失败）。请严格按以下标准重写：\n1) 只能输出一个 JSON 对象，不得有任何额外文本。\n2) action 只能是 run_sql/add_note/final_answer。\n3) run_sql 必须包含 title/rationale/sql；add_note 必须包含 title/rationale/note（note 为完整新备注全文）；final_answer 必须包含 summary 和 show_chart(boolean)。\n4) 你上一次的原始输出如下，请修正：\n${lastRaw}` },
       ]),
     });
     const llmRaw = await callLlm([
@@ -712,7 +713,7 @@ Schema总表数：${input.entities.length}
             : `${plannerUserContext}\n\n上一次输出不符合协议（第 ${failures} 次失败）。请严格按以下标准重写：`
               + "\n1) 只能输出一个 JSON 对象，不得有任何额外文本。"
               + "\n2) action 只能是 run_sql/add_note/final_answer。"
-              + "\n3) run_sql 必须包含 title/rationale/sql；add_note 必须包含 title/rationale/note；final_answer 必须包含 summary 和 show_chart(boolean)。"
+              + "\n3) run_sql 必须包含 title/rationale/sql；add_note 必须包含 title/rationale/note（note 为完整新备注全文）；final_answer 必须包含 summary 和 show_chart(boolean)。"
               + `\n4) 你上一次的原始输出如下，请修正：\n${lastRaw}`,
       },
     ]);
@@ -1281,15 +1282,6 @@ async function buildRecentHistoryContext(
 
 function summarizeAssistantMessage(content: string) {
   return content.trim();
-}
-
-function mergeDatasourceNote(existing: string, incoming: string) {
-  const base = existing.trim();
-  const add = incoming.trim();
-  if (!base) return add;
-  if (!add) return base;
-  if (base.includes(add)) return base;
-  return `${base}\n- ${add}`;
 }
 
 function isNoteInstructionQuestion(question: string) {

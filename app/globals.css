@@ -224,6 +224,46 @@ body {
   padding: 20px;
 }
 
+.auth-gate-shell {
+  display: grid;
+  place-items: center;
+}
+
+.auth-card {
+  width: min(420px, calc(100vw - 24px));
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: var(--shadow);
+  padding: 20px;
+}
+
+.auth-card h2 {
+  margin: 0 0 8px;
+  font-size: 22px;
+}
+
+.auth-card p {
+  margin: 0 0 14px;
+  color: var(--text-soft);
+  font-size: 13px;
+}
+
+.auth-form {
+  display: grid;
+  gap: 10px;
+}
+
+.auth-form input {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 14px;
+  background: #fff;
+  color: var(--text);
+}
+
 .home-status {
   margin-bottom: 14px;
 }
