@@ -1,0 +1,4 @@
+interface:
+  display_name: "Git Update Commit Push"
+  short_description: "Summarize repo changes and safely run git add/commit/push."
+  default_prompt: "Summarize current project updates, stage relevant files, create a clear commit message, and push to the configured remote branch."

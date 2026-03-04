@@ -913,6 +913,37 @@ function parsePlannerDecision(text: string): PlannerDecision | null {
       };
     }
   }
+  const recovered = recoverPlannerDecisionFromLooseText(text);
+  if (recovered) return recovered;
+  return null;
+}
+
+function recoverPlannerDecisionFromLooseText(raw: string): PlannerDecision | null {
+  const text = normalizeQuotes(raw);
+  const action = extractLooseJsonStringField(text, "action");
+  if (!action) return null;
+
+  if (action === "final_answer") {
+    const summary = extractLooseFinalAnswerSummary(text);
+    if (!summary?.trim()) return null;
+    return {
+      action: "final_answer",
+      summary: summary.trim(),
+      showChart: extractLooseJsonBooleanField(text, "show_chart") ?? extractLooseJsonBooleanField(text, "showChart"),
+    };
+  }
+
+  if (action === "add_note") {
+    const note = extractLooseJsonStringField(text, "note");
+    if (!note?.trim()) return null;
+    return {
+      action: "add_note",
+      title: extractLooseJsonStringField(text, "title")?.trim() || "更新数据库备注",
+      rationale: extractLooseJsonStringField(text, "rationale")?.trim() || "沉淀业务知识",
+      note: note.trim(),
+    };
+  }
+
   return null;
 }
 
@@ -1149,8 +1180,19 @@ function extractFirstJsonObject(text: string) {
 }
 
 function collectJsonCandidates(raw: string) {
+  const trimmed = raw.trim();
   const normalized = normalizeQuotes(raw).trim();
   const out: string[] = [];
+  const rawFenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (rawFenced?.[1]) out.push(rawFenced[1].trim());
+  const rawStripped = stripCodeFence(trimmed).trim();
+  if (rawStripped) out.push(rawStripped);
+  const rawFirstObj = extractFirstJsonObject(rawStripped);
+  if (rawFirstObj) out.push(rawFirstObj);
+  const rawFirstObjDirect = extractFirstJsonObject(trimmed);
+  if (rawFirstObjDirect) out.push(rawFirstObjDirect);
+
+  // 回退候选：容忍模型将 JSON 键名输出为中文引号等情况。
   const fenced = normalized.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
   if (fenced?.[1]) out.push(fenced[1].trim());
   const stripped = stripCodeFence(normalized).trim();
