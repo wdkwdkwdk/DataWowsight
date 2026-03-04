@@ -4,6 +4,22 @@ type HistoryItem = { role: "user" | "assistant"; content: string };
 type EvidenceItem = { label: string; value: string };
 type SimpleSchema = Array<{ tableName: string; columns: Array<{ name: string; dataType: string }> }>;
 
+function buildNowContextLine() {
+  const now = new Date();
+  const utc = now.toISOString();
+  const shanghai = new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(now);
+  return `当前时间（UTC）：${utc}\n当前时间（Asia/Shanghai）：${shanghai}`;
+}
+
 export function buildPlannerStage1SystemPrompt() {
   return `你是只读 SQL 分析代理（阶段1：选表与决策）。目标是在最多 10 步内，用最少 SQL、最高信息密度回答用户问题。
 
@@ -52,7 +68,8 @@ export function buildPlannerStage1UserContext(input: {
   traces: AnalysisPlanStep[];
   evidence: EvidenceItem[];
 }) {
-  return `用户问题：${input.question}
+  return `${buildNowContextLine()}
+用户问题：${input.question}
 数据库方言：${input.dbKind}
 当前步数：${input.stepIndex + 1}
 数据库备注：${input.datasourceNote || "（空）"}
@@ -108,7 +125,8 @@ export function buildSqlWriterUserContext(input: {
   traces: AnalysisPlanStep[];
   evidence: EvidenceItem[];
 }) {
-  return `用户问题：${input.question}
+  return `${buildNowContextLine()}
+用户问题：${input.question}
 数据库方言：${input.dbKind}
 当前步数：${input.stepIndex + 1}
 数据库备注：${input.datasourceNote || "（空）"}
@@ -138,7 +156,7 @@ export function buildSummarySystemPrompt() {
 }
 
 export function buildSummaryUserPayload(question: string, evidence: EvidenceItem[], traces: AnalysisPlanStep[], datasourceNote: string) {
-  return `问题：${question}\n证据：${JSON.stringify(evidence)}\n步骤：${JSON.stringify(
+  return `${buildNowContextLine()}\n问题：${question}\n证据：${JSON.stringify(evidence)}\n步骤：${JSON.stringify(
     traces.map((t) => ({ title: t.title, rationale: t.rationale })),
   )}\n数据库备注：${datasourceNote || "（空）"}`;
 }
@@ -155,5 +173,5 @@ export function buildChartPlannerUserPayload(
   summary: string,
   candidates: Array<{ title: string; sql: string; rowCount: number; columns: string[]; sample: Array<Record<string, unknown>> }>,
 ) {
-  return `问题：${question}\n结论：${summary}\n可用数据集：${JSON.stringify(candidates)}`;
+  return `${buildNowContextLine()}\n问题：${question}\n结论：${summary}\n可用数据集：${JSON.stringify(candidates)}`;
 }
