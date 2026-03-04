@@ -31,6 +31,7 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
       conversationId: id,
       question: parsed.data.question,
       sessionId: id,
+      llmModel: parsed.data.llmModel,
     });
 
     return ok(result);

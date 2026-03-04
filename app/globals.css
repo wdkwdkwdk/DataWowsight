@@ -152,7 +152,7 @@ body {
   position: absolute;
   right: 0;
   top: calc(100% + 8px);
-  min-width: 156px;
+  min-width: 260px;
   border: 1px solid var(--border);
   border-radius: 12px;
   background: #fff;
@@ -161,6 +161,39 @@ body {
   display: grid;
   gap: 4px;
   z-index: 90;
+}
+
+.action-model-picker {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  padding: 8px;
+  display: grid;
+  gap: 6px;
+}
+
+.action-model-label {
+  font-size: 11px;
+  color: var(--text-soft);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.action-model-select {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--text);
+  font-size: 12px;
+  padding: 7px 8px;
+}
+
+.action-model-hint {
+  font-size: 11px;
+  color: var(--text-soft);
+  overflow-wrap: anywhere;
 }
 
 .action-popover button {

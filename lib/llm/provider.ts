@@ -5,33 +5,53 @@ export interface LlmMessage {
   content: string;
 }
 
-export async function callLlm(messages: LlmMessage[]): Promise<string> {
-  const provider = process.env.LLM_PROVIDER ?? "mock";
+export interface CallLlmOptions {
+  modelOverride?: string;
+}
 
+export interface LlmRuntimeConfig {
+  provider: string;
+  defaultModel: string;
+  selectableModels: string[];
+}
+
+export function getLlmRuntimeConfig(): LlmRuntimeConfig {
+  const provider = process.env.LLM_PROVIDER ?? "mock";
+  const defaultModel = resolveDefaultModel(provider);
+  const selectableModels =
+    provider === "openrouter"
+      ? uniqueNonEmpty([defaultModel, "minimax/minimax-m2.5", "moonshotai/kimi-k2.5"])
+      : [defaultModel];
+  return { provider, defaultModel, selectableModels };
+}
+
+export async function callLlm(messages: LlmMessage[], options?: CallLlmOptions): Promise<string> {
+  const provider = process.env.LLM_PROVIDER ?? "mock";
+  const modelOverride = options?.modelOverride?.trim();
   if (provider === "openrouter") {
-    return callOpenRouter(messages);
+    return callOpenRouter(messages, modelOverride);
   }
 
   if (provider === "openai") {
-    return callOpenAI(messages);
+    return callOpenAI(messages, modelOverride);
   }
 
   if (provider === "anthropic") {
-    return callAnthropic(messages);
+    return callAnthropic(messages, modelOverride);
   }
 
   if (provider === "gemini") {
-    return callGemini(messages);
+    return callGemini(messages, modelOverride);
   }
 
   return mockReply(messages);
 }
 
-async function callOpenAI(messages: LlmMessage[]) {
+async function callOpenAI(messages: LlmMessage[], modelOverride?: string) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) return mockReply(messages);
 
-  const model = process.env.OPENAI_MODEL ?? "gpt-4.1-mini";
+  const model = modelOverride || process.env.OPENAI_MODEL || "gpt-4.1-mini";
   logLlmRequest("openai", model, messages);
   return callOpenAiCompatible({
     apiKey,
@@ -41,11 +61,11 @@ async function callOpenAI(messages: LlmMessage[]) {
   });
 }
 
-async function callOpenRouter(messages: LlmMessage[]) {
+async function callOpenRouter(messages: LlmMessage[], modelOverride?: string) {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) return mockReply(messages);
 
-  const model = process.env.OPENROUTER_MODEL ?? "google/gemini-3-flash-preview";
+  const model = modelOverride || process.env.OPENROUTER_MODEL || "google/gemini-3-flash-preview";
   logLlmRequest("openrouter", model, messages);
   const baseUrl = process.env.OPENROUTER_BASE_URL ?? "https://openrouter.ai/api/v1";
   const appUrl = process.env.OPENROUTER_APP_URL ?? "http://localhost:3000";
@@ -105,11 +125,11 @@ async function callOpenAiCompatible(input: {
   return fallback;
 }
 
-async function callAnthropic(messages: LlmMessage[]) {
+async function callAnthropic(messages: LlmMessage[], modelOverride?: string) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return mockReply(messages);
 
-  const model = process.env.ANTHROPIC_MODEL ?? "claude-3-5-haiku-latest";
+  const model = modelOverride || process.env.ANTHROPIC_MODEL || "claude-3-5-haiku-latest";
   logLlmRequest("anthropic", model, messages);
   const input = messages.map((m) => `${m.role.toUpperCase()}: ${m.content}`).join("\n\n");
 
@@ -143,11 +163,11 @@ async function callAnthropic(messages: LlmMessage[]) {
   return fallback;
 }
 
-async function callGemini(messages: LlmMessage[]) {
+async function callGemini(messages: LlmMessage[], modelOverride?: string) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return mockReply(messages);
 
-  const model = process.env.GEMINI_MODEL ?? "gemini-1.5-flash";
+  const model = modelOverride || process.env.GEMINI_MODEL || "gemini-1.5-flash";
   logLlmRequest("gemini", model, messages);
   const prompt = messages.map((m) => `${m.role.toUpperCase()}: ${m.content}`).join("\n\n");
 
@@ -229,4 +249,23 @@ async function safeReadText(res: Response) {
   } catch {
     return "failed_to_read_error_body";
   }
+}
+
+function resolveDefaultModel(provider: string) {
+  if (provider === "openrouter") return process.env.OPENROUTER_MODEL ?? "google/gemini-3-flash-preview";
+  if (provider === "openai") return process.env.OPENAI_MODEL ?? "gpt-4.1-mini";
+  if (provider === "anthropic") return process.env.ANTHROPIC_MODEL ?? "claude-3-5-haiku-latest";
+  if (provider === "gemini") return process.env.GEMINI_MODEL ?? "gemini-1.5-flash";
+  return "mock";
+}
+
+function uniqueNonEmpty(items: string[]) {
+  const out: string[] = [];
+  for (const item of items) {
+    const value = item.trim();
+    if (!value) continue;
+    if (out.includes(value)) continue;
+    out.push(value);
+  }
+  return out;
 }

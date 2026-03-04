@@ -14,6 +14,7 @@ export const queryAnalysisSchema = z.object({
   question: z.string().min(1),
   sessionId: z.string().optional(),
   conversationId: z.string().optional(),
+  llmModel: z.string().min(1).max(120).optional(),
 });
 
 export const clarifySchema = z.object({
@@ -56,6 +57,7 @@ export const createConversationSchema = z.object({
 export const postConversationMessageSchema = z.object({
   question: z.string().min(1),
   connectionId: z.string().min(1),
+  llmModel: z.string().min(1).max(120).optional(),
 });
 
 export const patchDatasourceNoteSchema = z.object({

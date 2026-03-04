@@ -68,6 +68,12 @@ type InsightChart = {
   data: Array<Record<string, unknown>>;
 };
 
+type LlmConfig = {
+  provider: string;
+  defaultModel: string;
+  selectableModels: string[];
+};
+
 type ChatMessage = {
   id: string;
   role: "user" | "assistant" | "system";
@@ -84,6 +90,7 @@ type ChatMessage = {
 
 const ReactECharts = dynamic(() => import("echarts-for-react"), { ssr: false });
 const APP_VERSION = "v1.0.31";
+const MODEL_STORAGE_KEY = "dw:selected-llm-model";
 
 export default function Home() {
   const [mounted, setMounted] = useState(false);
@@ -129,6 +136,8 @@ export default function Home() {
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [showConnectionActions, setShowConnectionActions] = useState(false);
+  const [llmConfig, setLlmConfig] = useState<LlmConfig | null>(null);
+  const [selectedLlmModel, setSelectedLlmModel] = useState("");
   const [showRename, setShowRename] = useState(false);
   const [renameDraft, setRenameDraft] = useState("");
   const [renameBusy, setRenameBusy] = useState(false);
@@ -147,6 +156,12 @@ export default function Home() {
     () => connections.find((c) => c.id === selectedConnectionId),
     [connections, selectedConnectionId],
   );
+  const llmModelOptions = useMemo(() => {
+    const fromConfig = llmConfig?.selectableModels ?? [];
+    if (fromConfig.length > 0) return fromConfig;
+    if (selectedLlmModel) return [selectedLlmModel];
+    return [];
+  }, [llmConfig, selectedLlmModel]);
   const authReady = !authLoading && (!authEnabled || authenticated);
 
   const loadConnections = useCallback(async () => {
@@ -196,6 +211,28 @@ export default function Home() {
     setMessages((data.messages ?? []) as ChatMessage[]);
   }, []);
 
+  const loadLlmConfig = useCallback(async () => {
+    const res = await fetch("/api/llm/config", { cache: "no-store" });
+    const data = (await res.json()) as LlmConfig & { error?: string };
+    if (!res.ok) throw new Error(data.error || "加载模型配置失败");
+    const options = Array.isArray(data.selectableModels) ? data.selectableModels.filter(Boolean) : [];
+    const fallbackModel = data.defaultModel || options[0] || "";
+    const stored = typeof window !== "undefined" ? window.localStorage.getItem(MODEL_STORAGE_KEY)?.trim() : "";
+    const resolved =
+      stored && (options.includes(stored) || stored === fallbackModel)
+        ? stored
+        : fallbackModel;
+    setLlmConfig({
+      provider: data.provider || "mock",
+      defaultModel: fallbackModel,
+      selectableModels: options.length ? options : [fallbackModel],
+    });
+    setSelectedLlmModel(resolved);
+    if (typeof window !== "undefined" && resolved) {
+      window.localStorage.setItem(MODEL_STORAGE_KEY, resolved);
+    }
+  }, []);
+
   useEffect(() => {
     setMounted(true);
     console.info(`[DataWowsight] ${APP_VERSION}`);
@@ -204,10 +241,11 @@ export default function Home() {
   useEffect(() => {
     if (!authReady) return;
     void loadConnections();
+    void loadLlmConfig();
     return () => {
       sseRef.current?.close();
     };
-  }, [authReady, loadConnections]);
+  }, [authReady, loadConnections, loadLlmConfig]);
 
   const refreshAuthStatus = useCallback(async () => {
     const res = await fetch("/api/auth/status", { cache: "no-store" });
@@ -482,6 +520,15 @@ export default function Home() {
     setRunStatus("");
   }
 
+  function handleSelectLlmModel(nextModel: string) {
+    const value = nextModel.trim();
+    setSelectedLlmModel(value);
+    if (typeof window !== "undefined") {
+      if (value) window.localStorage.setItem(MODEL_STORAGE_KEY, value);
+      else window.localStorage.removeItem(MODEL_STORAGE_KEY);
+    }
+  }
+
   async function handleRenameConnection() {
     if (!selectedConnectionId || !renameDraft.trim()) return;
     setRenameBusy(true);
@@ -585,7 +632,7 @@ export default function Home() {
     const res = await fetch(`/api/conversations/${conversationId}/messages`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, connectionId: selectedConnectionId }),
+      body: JSON.stringify({ question, connectionId: selectedConnectionId, llmModel: selectedLlmModel || undefined }),
     });
     const data = await res.json();
     if (!res.ok) {
@@ -953,6 +1000,24 @@ export default function Home() {
                 </button>
                 {showConnectionActions && (
                   <div className="action-popover">
+                    <div className="action-model-picker">
+                      <div className="action-model-label">Model</div>
+                      <select
+                        className="action-model-select"
+                        value={selectedLlmModel}
+                        onChange={(e) => handleSelectLlmModel(e.target.value)}
+                        disabled={llmModelOptions.length === 0}
+                      >
+                        {llmModelOptions.map((model) => (
+                          <option key={model} value={model}>
+                            {model}
+                          </option>
+                        ))}
+                      </select>
+                      {llmConfig?.defaultModel && (
+                        <div className="action-model-hint">默认: {llmConfig.defaultModel}</div>
+                      )}
+                    </div>
                     <button
                       type="button"
                       onClick={() => {

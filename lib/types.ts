@@ -116,6 +116,7 @@ export interface QueryRequest {
   question: string;
   sessionId?: string;
   conversationId?: string;
+  llmModel?: string;
 }
 
 export interface ClarifyRequest {

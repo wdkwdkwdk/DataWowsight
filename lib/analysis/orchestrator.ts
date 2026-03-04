@@ -130,6 +130,7 @@ export async function runAnalysisQuery(input: QueryRequest) {
     uri: datasource.uri,
     dbKind: datasource.kind,
     question: input.question,
+    llmModel: input.llmModel,
     context,
   });
 
@@ -171,6 +172,7 @@ async function executeAnalysisInBackground(input: {
   uri: string;
   dbKind: DbKind;
   question: string;
+  llmModel?: string;
   context: Record<string, unknown>;
 }) {
   try {
@@ -182,6 +184,7 @@ async function executeAnalysisInBackground(input: {
       uri: input.uri,
       dbKind: input.dbKind,
       question: input.question,
+      llmModel: input.llmModel,
       onProgress: async (progress) => {
         await updateRunStatus(input.runId, "running", { progress });
         await createRunEvent({
@@ -270,6 +273,7 @@ async function executeAnalysis(input: {
   uri: string;
   dbKind: DbKind;
   question: string;
+  llmModel?: string;
   onProgress?: (progress: ProgressState) => Promise<void>;
   onEvent?: (eventType: RunEvent["eventType"], step: number, payload: Record<string, unknown>) => Promise<void>;
 }): Promise<InsightReport> {
@@ -322,6 +326,7 @@ async function executeAnalysis(input: {
       const action = await planNextAction({
         question: input.question,
         dbKind: input.dbKind,
+        llmModel: input.llmModel,
         entities: readyEntities,
         traces,
         evidence,
@@ -629,9 +634,10 @@ async function executeAnalysis(input: {
     }
   });
 
-  const rawSummary = llmFinalSummary ?? (await synthesizeFinalSummary(input.question, evidence, traces, datasourceNote, pushDebugLog));
+  const rawSummary =
+    llmFinalSummary ?? (await synthesizeFinalSummary(input.question, evidence, traces, datasourceNote, input.llmModel, pushDebugLog));
   const summary = normalizeFinalSummaryText(rawSummary);
-  const chart = llmWantsChart ? await buildInsightChart(input.question, summary, resultSets, pushDebugLog) : undefined;
+  const chart = llmWantsChart ? await buildInsightChart(input.question, summary, resultSets, input.llmModel, pushDebugLog) : undefined;
   const resultTable = shouldIncludeResultTable(input.question) ? buildResultTable(resultSets) : undefined;
 
   return {
@@ -649,6 +655,7 @@ async function executeAnalysis(input: {
 async function planNextAction(input: {
   question: string;
   dbKind: DbKind;
+  llmModel?: string;
   entities: Array<{ tableName: string; columns: Array<{ name: string; dataType: string }> }>;
   traces: AnalysisPlanStep[];
   evidence: Array<{ label: string; value: string }>;
@@ -696,7 +703,7 @@ async function planNextAction(input: {
             ? plannerUserContext
             : buildPlannerStage1RetryContext(plannerUserContext, failures, lastRaw),
       },
-    ]);
+    ], { modelOverride: input.llmModel });
 
     lastRaw = (llmRaw ?? "").trim();
     input.onDebugLog?.({
@@ -728,6 +735,7 @@ async function planNextAction(input: {
         return generateSqlFromSelectedTables({
           question: input.question,
           dbKind: input.dbKind,
+          llmModel: input.llmModel,
           stepIndex: input.stepIndex,
           datasourceNote: input.datasourceNote,
           history: input.history,
@@ -759,6 +767,7 @@ async function planNextAction(input: {
 async function generateSqlFromSelectedTables(input: {
   question: string;
   dbKind: DbKind;
+  llmModel?: string;
   stepIndex: number;
   datasourceNote: string;
   history: Array<{ role: "user" | "assistant"; content: string }>;
@@ -807,7 +816,7 @@ async function generateSqlFromSelectedTables(input: {
             ? sqlWriterUserContext
             : buildSqlWriterRetryContext(sqlWriterUserContext, failures, lastRaw),
       },
-    ]);
+    ], { modelOverride: input.llmModel });
 
     lastRaw = (llmRaw ?? "").trim();
     input.onDebugLog?.({
@@ -1009,6 +1018,7 @@ async function synthesizeFinalSummary(
   evidence: Array<{ label: string; value: string }>,
   traces: AnalysisPlanStep[],
   datasourceNote: string,
+  llmModel: string | undefined,
   onDebugLog?: (log: Omit<AnalysisDebugLog, "ts">) => void,
 ) {
   try {
@@ -1027,7 +1037,7 @@ async function synthesizeFinalSummary(
         role: "user",
         content: reqPayload,
       },
-    ]);
+    ], { modelOverride: llmModel });
     onDebugLog?.({
       kind: "llm_response",
       title: "summary",
@@ -1050,6 +1060,7 @@ async function buildInsightChart(
   question: string,
   summary: string,
   resultSets: Array<{ title: string; sql: string; rows: Array<Record<string, unknown>> }>,
+  llmModel: string | undefined,
   onDebugLog?: (log: Omit<AnalysisDebugLog, "ts">) => void,
 ): Promise<InsightChart | undefined> {
   const candidates = resultSets
@@ -1079,7 +1090,7 @@ async function buildInsightChart(
         role: "user",
         content: reqPayload,
       },
-    ]);
+    ], { modelOverride: llmModel });
     onDebugLog?.({
       kind: "llm_response",
       title: "chart_planner",
