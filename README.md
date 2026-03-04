@@ -1,36 +1,51 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# DataWowsight (Vercel Native V1)
 
-## Getting Started
+Natural-language analytics assistant for read-only databases.
 
-First, run the development server:
+## Stack
+- Next.js App Router (UI + Route Handlers)
+- Vercel Postgres (memory + sessions + audit)
+- Target DB connectors: MySQL / PostgreSQL / SQLite
+- SQL safety guard with AST + keyword blocking
 
+## Quick Start
+1. Install deps
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+2. Configure env
+```bash
+cp .env.example .env.local
+```
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+3. Run
+```bash
+npm run dev
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Open `http://localhost:3000`.
 
-## Learn More
+## Environment Variables
+- `POSTGRES_URL` (required): Vercel Postgres connection string for app memory DB.
+- `LLM_PROVIDER` (optional): `openrouter` | `openai` | `anthropic` | `gemini` | `mock`.
+- `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`, `OPENROUTER_BASE_URL`, `OPENROUTER_APP_URL`, `OPENROUTER_APP_NAME` (optional)
+- `OPENAI_API_KEY`, `OPENAI_MODEL` (optional)
+- `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` (optional)
+- `GEMINI_API_KEY`, `GEMINI_MODEL` (optional)
 
-To learn more about Next.js, take a look at the following resources:
+## API Endpoints
+- `GET/POST /api/connections`
+- `POST /api/connections/:id/test`
+- `POST /api/connections/:id/introspect`
+- `POST /api/analysis/query`
+- `POST /api/analysis/clarify`
+- `GET /api/analysis/runs/:id`
+- `GET/POST/PATCH /api/knowledge/terms`
+- `POST /api/knowledge/bindings`
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Notes
+- All target DB queries are read-only guarded. Non-SELECT statements are blocked.
+- Non-read-only credentials are allowed with warning; the app still executes read-only SQL only.
+- Query row limit and timeout are enforced in server logic.
+- Run `/api/connections/:id/introspect` before asking analysis questions.
