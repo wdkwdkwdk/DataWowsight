@@ -118,6 +118,8 @@ export default function Home() {
   const [dbParamPassword, setDbParamPassword] = useState("");
   const [dbParamSsl, setDbParamSsl] = useState(true);
   const [dbCreateStatus, setDbCreateStatus] = useState("");
+  const [dbScanPercent, setDbScanPercent] = useState<number | null>(null);
+  const [dbScanStage, setDbScanStage] = useState("");
   const [creatingConversation, setCreatingConversation] = useState(false);
   const [showNotes, setShowNotes] = useState(false);
   const [datasourceNote, setDatasourceNote] = useState("");
@@ -332,7 +334,11 @@ export default function Home() {
     e.preventDefault();
     setGlobalLoading(true);
     setDbCreateStatus("正在创建连接并校验权限...");
+    setDbScanPercent(null);
+    setDbScanStage("");
     setStatusMessage("");
+    let scanTimer: ReturnType<typeof setInterval> | null = null;
+    const scanStartAt = Date.now();
 
     try {
       const connectionUri = buildConnectionUri({
@@ -357,9 +363,25 @@ export default function Home() {
 
       const newConnectionId = data.datasource.id as string;
       setDbCreateStatus("连接成功，正在自动扫描结构...");
+      const tickScanProgress = () => {
+        const progress = estimateScanProgress(Date.now() - scanStartAt);
+        setDbScanPercent(progress.percent);
+        setDbScanStage(progress.stage);
+        setDbCreateStatus(`正在扫描结构 ${progress.percent}% · ${progress.stage}`);
+      };
+      tickScanProgress();
+      scanTimer = setInterval(tickScanProgress, 700);
       const introspectRes = await fetch(`/api/connections/${newConnectionId}/introspect?full=1`, { method: "POST" });
       const introspectData = await introspectRes.json();
       if (!introspectRes.ok) throw new Error(introspectData.error || "Schema introspection failed");
+      if (scanTimer) {
+        clearInterval(scanTimer);
+        scanTimer = null;
+      }
+      setDbScanPercent(100);
+      setDbScanStage("扫描完成");
+      setDbCreateStatus("正在扫描结构 100% · 扫描完成");
+      await wait(260);
 
       await loadConnections();
       setSelectedConnectionId("");
@@ -379,7 +401,10 @@ export default function Home() {
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : "创建数据库失败");
     } finally {
+      if (scanTimer) clearInterval(scanTimer);
       setDbCreateStatus("");
+      setDbScanPercent(null);
+      setDbScanStage("");
       setGlobalLoading(false);
     }
   }
@@ -387,15 +412,27 @@ export default function Home() {
   async function handleReloadSchema() {
     if (!selectedConnectionId) return;
     setGlobalLoading(true);
-    setStatusMessage("正在全量重建数据库索引（表/字段/关系）...");
+    let scanTimer: ReturnType<typeof setInterval> | null = null;
+    const scanStartAt = Date.now();
+    const tickScanProgress = () => {
+      const progress = estimateScanProgress(Date.now() - scanStartAt);
+      setStatusMessage(`正在重建索引 ${progress.percent}% · ${progress.stage}`);
+    };
+    tickScanProgress();
+    scanTimer = setInterval(tickScanProgress, 700);
     try {
       const res = await fetch(`/api/connections/${selectedConnectionId}/introspect?full=1`, { method: "POST" });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Reindex failed");
+      if (scanTimer) {
+        clearInterval(scanTimer);
+        scanTimer = null;
+      }
       setStatusMessage(`重索引完成，共同步 ${data.tables ?? 0} 张表/视图。`);
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : "重索引失败");
     } finally {
+      if (scanTimer) clearInterval(scanTimer);
       setGlobalLoading(false);
     }
   }
@@ -1368,6 +1405,17 @@ export default function Home() {
                 </div>
               )}
               {dbCreateStatus && <div className="status-msg">{dbCreateStatus}</div>}
+              {dbScanPercent !== null && (
+                <div className="scan-progress" aria-live="polite">
+                  <div className="scan-progress-head">
+                    <span>{dbScanStage || "正在扫描结构"}</span>
+                    <span>{dbScanPercent}%</span>
+                  </div>
+                  <div className="scan-progress-track">
+                    <div className="scan-progress-bar" style={{ width: `${dbScanPercent}%` }} />
+                  </div>
+                </div>
+              )}
               <div className="modal-actions">
                 <button className="btn ghost" onClick={() => setShowAddDb(false)} type="button">
                   Cancel
@@ -1500,6 +1548,20 @@ function summarizeTitle(question: string) {
 
 function wait(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function estimateScanProgress(elapsedMs: number) {
+  const stages = [
+    "连接元数据服务",
+    "拉取表/视图清单",
+    "读取字段定义",
+    "收集主外键关系",
+    "写入本地索引",
+  ] as const;
+  const clamped = Math.max(0, elapsedMs);
+  const percent = Math.min(94, Math.max(3, Math.round((clamped / 45000) * 94)));
+  const stageIdx = Math.min(stages.length - 1, Math.floor((percent / 95) * stages.length));
+  return { percent, stage: stages[stageIdx] };
 }
 
 function formatDurationMs(ms: number) {

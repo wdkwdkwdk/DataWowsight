@@ -43,6 +43,25 @@ type PlannerAction =
       showChart?: boolean;
     };
 
+type PlannerDecision =
+  | {
+      action: "run_sql";
+      title: string;
+      rationale: string;
+      tables: string[];
+    }
+  | {
+      action: "add_note";
+      title: string;
+      rationale: string;
+      note: string;
+    }
+  | {
+      action: "final_answer";
+      summary: string;
+      showChart?: boolean;
+    };
+
 type ProgressState = {
   phase: "planning" | "executing" | "completed" | "failed";
   step: number;
@@ -627,11 +646,7 @@ async function planNextAction(input: {
   onDebugLog?: (log: Omit<AnalysisDebugLog, "ts">) => void;
 }): Promise<PlannerAction> {
   const allTableNames = input.entities.map((e) => e.tableName).sort((a, b) => a.localeCompare(b));
-  const schemaBrief = selectSchemaBriefForQuestion(input.question, input.entities).map((e) => ({
-    tableName: e.tableName,
-    columns: e.columns.slice(0, 18).map((c) => ({ name: c.name, dataType: c.dataType })),
-  }));
-  const plannerSystemPrompt = `你是只读 SQL 分析代理。目标是在最多 8 步内，用最少 SQL、最高信息密度回答用户问题，并尽可能给出洞察。
+  const plannerSystemPrompt = `你是只读 SQL 分析代理（阶段1：选表与决策）。目标是在最多 8 步内，用最少 SQL、最高信息密度回答用户问题。
 
 【硬性输出格式】
 - 你必须且只能输出一个合法 JSON 对象。
@@ -640,25 +655,16 @@ async function planNextAction(input: {
 
 【动作 JSON 模板】
 1) run_sql:
-{"action":"run_sql","title":"short_english_title","rationale":"one-sentence why this SQL is necessary and how it serves user intent","sql":"SELECT ..."}
+{"action":"run_sql","title":"short_english_title","rationale":"one-sentence why this SQL is necessary and how it serves user intent","tables":["table_a","table_b"]}
 2) add_note:
 {"action":"add_note","title":"简短标题","rationale":"为什么编辑此备注（体现对用户意图理解）","note":"编辑后的完整备注全文（不是增量片段）"}
 3) final_answer:
 {"action":"final_answer","summary":"完整自然语言结论，含关键证据、趋势/比较/异常/建议，必要时说明局限","show_chart":true|false}
 
-【SQL 硬约束】
-- 只能一条完整 SELECT（允许单条 WITH ... SELECT）。
-- 严禁多语句；严禁分号后的第二条语句。
-- 严禁 DDL/DML（INSERT/UPDATE/DELETE/DROP/ALTER/TRUNCATE/CREATE 等）。
-- 禁止 SELECT *，只选必要列。
-- 默认控制结果规模（建议 LIMIT <= 1000）。
-- 不要使用 markdown 的 \`\`\`sql 包裹。
-- 若上一步报错包含 unknown column/column does not exist/no such column，先按 schema 修正列名再继续，禁止重复提交同类错误 SQL。
-- 性能优先：宁愿多查几次轻量 SQL，也不要一条超重 SQL；JOIN 建议不超过 2 个，避免 UNION 合并异构结果集。
-- MySQL 特别规则：避免 UNION + 多分支 LIMIT 这类写法；如需多结果，拆成多步查询。
-- 以 DBA 视角优化：优先走索引列（主键/唯一键/高选择性字段）；尽量避免在疑似无索引列上排序和过滤。
-- 若不确定索引，先用 information_schema.statistics 做一次索引探测，再决定业务 SQL。
-- 取“最近 N 条”优先主键倒序（如 id DESC）+ 小列集，再按需补查；避免一开始就大字段 + 复杂筛选。
+【run_sql 的阶段1要求】
+- 本阶段只负责选“目标表”，不要写 SQL。
+- tables 必须来自给定“全量表名”，建议 1-3 张，最多 5 张。
+- 若问题明显与“规则声明/口径更新/禁用某类表”相关，优先 add_note。
 
 【决策优先级（严格执行）】
 1. 先理解用户意图（字面需求 + 潜在兴趣，如趋势、异常、对比、原因）。
@@ -680,7 +686,6 @@ async function planNextAction(input: {
 当前数据库原始备注全文（编辑 add_note 时必须基于此内容改写并输出完整新版本）：${input.datasourceNote || "（空）"}
 历史消息：${JSON.stringify(input.history)}
 全量表名：${JSON.stringify(allTableNames)}
-可用Schema：${JSON.stringify(schemaBrief)}
 Schema总表数：${input.entities.length}
 已执行步骤：${JSON.stringify(input.traces.map((t) => ({ title: t.title, sql: t.sql, status: t.status, reason: t.reason })))}
 已得证据：${JSON.stringify(input.evidence)}
@@ -697,7 +702,7 @@ Schema总表数：${input.entities.length}
       detail: failures === 0 ? "initial" : `retry_${failures}`,
       payload: JSON.stringify([
         { role: "system", content: plannerSystemPrompt },
-        { role: "user", content: failures === 0 ? plannerUserContext : `${plannerUserContext}\n\n上一次输出不符合协议（第 ${failures} 次失败）。请严格按以下标准重写：\n1) 只能输出一个 JSON 对象，不得有任何额外文本。\n2) action 只能是 run_sql/add_note/final_answer。\n3) run_sql 必须包含 title/rationale/sql；add_note 必须包含 title/rationale/note（note 为完整新备注全文）；final_answer 必须包含 summary 和 show_chart(boolean)。\n4) 你上一次的原始输出如下，请修正：\n${lastRaw}` },
+        { role: "user", content: failures === 0 ? plannerUserContext : `${plannerUserContext}\n\n上一次输出不符合协议（第 ${failures} 次失败）。请严格按以下标准重写：\n1) 只能输出一个 JSON 对象，不得有任何额外文本。\n2) action 只能是 run_sql/add_note/final_answer。\n3) run_sql 必须包含 title/rationale/tables(数组，来自全量表名)；add_note 必须包含 title/rationale/note（note 为完整新备注全文）；final_answer 必须包含 summary 和 show_chart(boolean)。\n4) 你上一次的原始输出如下，请修正：\n${lastRaw}` },
       ]),
     });
     const llmRaw = await callLlm([
@@ -713,7 +718,7 @@ Schema总表数：${input.entities.length}
             : `${plannerUserContext}\n\n上一次输出不符合协议（第 ${failures} 次失败）。请严格按以下标准重写：`
               + "\n1) 只能输出一个 JSON 对象，不得有任何额外文本。"
               + "\n2) action 只能是 run_sql/add_note/final_answer。"
-              + "\n3) run_sql 必须包含 title/rationale/sql；add_note 必须包含 title/rationale/note（note 为完整新备注全文）；final_answer 必须包含 summary 和 show_chart(boolean)。"
+              + "\n3) run_sql 必须包含 title/rationale/tables(数组，来自全量表名)；add_note 必须包含 title/rationale/note（note 为完整新备注全文）；final_answer 必须包含 summary 和 show_chart(boolean)。"
               + `\n4) 你上一次的原始输出如下，请修正：\n${lastRaw}`,
       },
     ]);
@@ -725,11 +730,146 @@ Schema总表数：${input.entities.length}
       detail: failures === 0 ? "initial" : `retry_${failures}`,
       payload: lastRaw,
     });
-    const parsed = parsePlannerAction(lastRaw);
-    if (parsed) return parsed;
+    const decision = parsePlannerDecision(lastRaw);
+    if (decision) {
+      if (decision.action === "run_sql") {
+        const requestedTables = normalizeSelectedTables(decision.tables, allTableNames);
+        const fallbackTables = selectSchemaBriefForQuestion(input.question, input.entities)
+          .slice(0, 6)
+          .map((e) => e.tableName);
+        const selectedTableNames = requestedTables.length ? requestedTables : fallbackTables;
+        const selectedSchema = input.entities
+          .filter((e) => selectedTableNames.includes(e.tableName))
+          .map((e) => ({
+            tableName: e.tableName,
+            columns: e.columns.map((c) => ({ name: c.name, dataType: c.dataType })),
+          }));
+        if (!selectedSchema.length) {
+          return {
+            action: "final_answer",
+            summary: lastRaw,
+          };
+        }
+        return generateSqlFromSelectedTables({
+          question: input.question,
+          dbKind: input.dbKind,
+          stepIndex: input.stepIndex,
+          datasourceNote: input.datasourceNote,
+          history: input.history,
+          traces: input.traces,
+          evidence: input.evidence,
+          selectedSchema,
+          seedTitle: decision.title,
+          seedRationale: decision.rationale,
+          onDebugLog: input.onDebugLog,
+        });
+      }
+      return decision;
+    }
     input.onDebugLog?.({
       kind: "system",
       title: "planner_parse_failed",
+      detail: `failure_${failures + 1}`,
+      payload: lastRaw,
+    });
+    failures += 1;
+  }
+
+  return {
+    action: "final_answer",
+    summary: lastRaw,
+  };
+}
+
+async function generateSqlFromSelectedTables(input: {
+  question: string;
+  dbKind: DbKind;
+  stepIndex: number;
+  datasourceNote: string;
+  history: Array<{ role: "user" | "assistant"; content: string }>;
+  traces: AnalysisPlanStep[];
+  evidence: Array<{ label: string; value: string }>;
+  selectedSchema: Array<{ tableName: string; columns: Array<{ name: string; dataType: string }> }>;
+  seedTitle: string;
+  seedRationale: string;
+  onDebugLog?: (log: Omit<AnalysisDebugLog, "ts">) => void;
+}): Promise<PlannerAction> {
+  const sqlWriterSystemPrompt = `你是只读 SQL 分析代理（阶段2：SQL生成）。你已经拿到目标表及其完整字段，请只输出 run_sql JSON。
+
+【硬性输出格式】
+- 你必须且只能输出一个合法 JSON 对象。
+- 只允许输出：{"action":"run_sql","title":"...","rationale":"...","sql":"..."}
+- 不允许任何额外文字、markdown、代码块、注释。
+
+【SQL 硬约束】
+- 只能一条完整 SELECT（允许单条 WITH ... SELECT）。
+- 严禁多语句；严禁分号后的第二条语句。
+- 严禁 DDL/DML（INSERT/UPDATE/DELETE/DROP/ALTER/TRUNCATE/CREATE 等）。
+- 可以使用 SELECT *。
+- 默认控制结果规模（建议 LIMIT <= 1000）。
+- 性能优先：宁愿多查几次轻量 SQL，也不要一条超重 SQL；JOIN 建议不超过 2 个。
+- MySQL 特别规则：避免 UNION + 多分支 LIMIT 这类写法；如需多结果，拆成多步查询。
+- 若上一步报错包含 unknown column/column does not exist/no such column，必须修正列名后再继续。`;
+
+  const sqlWriterUserContext = `用户问题：${input.question}
+数据库方言：${input.dbKind}
+当前步数：${input.stepIndex + 1}
+数据库备注：${input.datasourceNote || "（空）"}
+历史消息：${JSON.stringify(input.history)}
+目标表与字段（仅可使用这些表写 SQL）：${JSON.stringify(input.selectedSchema)}
+建议标题：${input.seedTitle}
+建议理由：${input.seedRationale}
+已执行步骤：${JSON.stringify(input.traces.map((t) => ({ title: t.title, sql: t.sql, status: t.status, reason: t.reason })))}
+已得证据：${JSON.stringify(input.evidence)}
+
+请只返回一个 JSON。`;
+
+  const maxFormatFailures = 3;
+  let failures = 0;
+  let lastRaw = "";
+
+  while (failures <= maxFormatFailures) {
+    input.onDebugLog?.({
+      kind: "llm_request",
+      title: "sql_writer",
+      detail: failures === 0 ? "initial" : `retry_${failures}`,
+      payload: JSON.stringify([
+        { role: "system", content: sqlWriterSystemPrompt },
+        { role: "user", content: failures === 0 ? sqlWriterUserContext : `${sqlWriterUserContext}\n\n上一次输出不符合协议（第 ${failures} 次失败）。请重写：\n1) 只能输出一个 JSON 对象。\n2) action 必须是 run_sql。\n3) 必须包含 title/rationale/sql。\n4) 你上一次输出：\n${lastRaw}` },
+      ]),
+    });
+
+    const llmRaw = await callLlm([
+      { role: "system", content: sqlWriterSystemPrompt },
+      {
+        role: "user",
+        content:
+          failures === 0
+            ? sqlWriterUserContext
+            : `${sqlWriterUserContext}\n\n上一次输出不符合协议（第 ${failures} 次失败）。请重写：`
+              + "\n1) 只能输出一个 JSON 对象。"
+              + "\n2) action 必须是 run_sql。"
+              + "\n3) 必须包含 title/rationale/sql。"
+              + `\n4) 你上一次输出：\n${lastRaw}`,
+      },
+    ]);
+
+    lastRaw = (llmRaw ?? "").trim();
+    input.onDebugLog?.({
+      kind: "llm_response",
+      title: "sql_writer",
+      detail: failures === 0 ? "initial" : `retry_${failures}`,
+      payload: lastRaw,
+    });
+
+    const parsed = parsePlannerAction(lastRaw);
+    if (parsed?.action === "run_sql") {
+      return parsed;
+    }
+
+    input.onDebugLog?.({
+      kind: "system",
+      title: "sql_writer_parse_failed",
       detail: `failure_${failures + 1}`,
       payload: lastRaw,
     });
@@ -783,6 +923,54 @@ function parsePlannerAction(text: string): PlannerAction | null {
   const recovered = recoverPlannerActionFromLooseText(text);
   if (recovered) return recovered;
   return null;
+}
+
+function parsePlannerDecision(text: string): PlannerDecision | null {
+  const candidates = collectJsonCandidates(text);
+  for (const candidate of candidates) {
+    const obj = tryParsePlannerJson(candidate) as Record<string, unknown> | null;
+    if (!obj || typeof obj.action !== "string") continue;
+    if (obj.action === "final_answer" && typeof obj.summary === "string" && obj.summary.trim()) {
+      return {
+        action: "final_answer",
+        summary: obj.summary.trim(),
+        showChart: parseShowChartFlag(obj),
+      };
+    }
+    if (obj.action === "add_note" && typeof obj.note === "string" && obj.note.trim()) {
+      return {
+        action: "add_note",
+        title: typeof obj.title === "string" && obj.title.trim() ? obj.title.trim() : "更新数据库备注",
+        rationale: typeof obj.rationale === "string" && obj.rationale.trim() ? obj.rationale.trim() : "沉淀业务知识",
+        note: obj.note.trim(),
+      };
+    }
+    if (obj.action === "run_sql") {
+      const tablesRaw = Array.isArray(obj.tables) ? obj.tables : [];
+      const tables = tablesRaw
+        .map((t) => (typeof t === "string" ? t.trim() : ""))
+        .filter((t) => t.length > 0);
+      return {
+        action: "run_sql",
+        title: typeof obj.title === "string" && obj.title.trim() ? obj.title.trim() : "SQL 分析步骤",
+        rationale: typeof obj.rationale === "string" && obj.rationale.trim() ? obj.rationale.trim() : "按问题继续取证",
+        tables,
+      };
+    }
+  }
+  return null;
+}
+
+function normalizeSelectedTables(tables: string[], allTableNames: string[]) {
+  const all = new Set(allTableNames);
+  const out: string[] = [];
+  for (const t of tables) {
+    if (!all.has(t)) continue;
+    if (out.includes(t)) continue;
+    out.push(t);
+    if (out.length >= 5) break;
+  }
+  return out;
 }
 
 function recoverPlannerActionFromLooseText(raw: string): PlannerAction | null {
