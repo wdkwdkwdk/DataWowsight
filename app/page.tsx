@@ -2,9 +2,11 @@
 
 import dynamic from "next/dynamic";
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Download, FileJson2, FileSpreadsheet, ScrollText, X } from "lucide-react";
+import { Download, FileJson2, FileSpreadsheet, ScrollText, Settings, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { getUiText } from "@/lib/i18n/ui";
+import type { LlmProviderMode, UiLanguage } from "@/lib/types";
 
 type Connection = {
   id: string;
@@ -72,6 +74,52 @@ type LlmConfig = {
   provider: string;
   defaultModel: string;
   selectableModels: string[];
+  supportedLanguages?: UiLanguage[];
+  providerModes?: LlmProviderMode[];
+  defaults?: {
+    openrouterSimple?: { baseUrl: string; model: string; appUrl: string; appName: string };
+    openaiCompatible?: { baseUrl: string; model: string };
+  };
+};
+
+type LlmSettingsResponse = {
+  effective?: {
+    language?: UiLanguage;
+    providerMode?: LlmProviderMode;
+    apiKey?: string;
+    baseUrl?: string;
+    model?: string;
+    providerLabel?: string;
+    extraHeaders?: Record<string, string>;
+    extraQueryParams?: Record<string, string>;
+    temperature?: number;
+    maxTokens?: number;
+    fromScope?: "conversation" | "datasource" | "env";
+  };
+  datasource?: {
+    language?: UiLanguage;
+    providerMode?: LlmProviderMode;
+    apiKey?: string;
+    baseUrl?: string;
+    model?: string;
+    providerLabel?: string;
+    extraHeaders?: Record<string, string>;
+    extraQueryParams?: Record<string, string>;
+    temperature?: number;
+    maxTokens?: number;
+  } | null;
+  conversation?: {
+    language?: UiLanguage;
+    providerMode?: LlmProviderMode;
+    apiKey?: string;
+    baseUrl?: string;
+    model?: string;
+    providerLabel?: string;
+    extraHeaders?: Record<string, string>;
+    extraQueryParams?: Record<string, string>;
+    temperature?: number;
+    maxTokens?: number;
+  } | null;
 };
 
 type ChatMessage = {
@@ -138,6 +186,22 @@ export default function Home() {
   const [showConnectionActions, setShowConnectionActions] = useState(false);
   const [llmConfig, setLlmConfig] = useState<LlmConfig | null>(null);
   const [selectedLlmModel, setSelectedLlmModel] = useState("");
+  const [uiLanguage, setUiLanguage] = useState<UiLanguage>("en");
+  const [showLlmSettings, setShowLlmSettings] = useState(false);
+  const [llmSettingsScope, setLlmSettingsScope] = useState<"datasource" | "conversation">("datasource");
+  const [llmSettingsLoading, setLlmSettingsLoading] = useState(false);
+  const [llmSettingsSaving, setLlmSettingsSaving] = useState(false);
+  const [llmSettingsStatus, setLlmSettingsStatus] = useState("");
+  const [effectiveLlmSummary, setEffectiveLlmSummary] = useState("");
+  const [llmProviderMode, setLlmProviderMode] = useState<LlmProviderMode>("openrouter_simple");
+  const [llmApiKey, setLlmApiKey] = useState("");
+  const [llmBaseUrl, setLlmBaseUrl] = useState("");
+  const [llmModel, setLlmModel] = useState("");
+  const [llmProviderLabel, setLlmProviderLabel] = useState("");
+  const [llmExtraHeadersText, setLlmExtraHeadersText] = useState("");
+  const [llmExtraQueryText, setLlmExtraQueryText] = useState("");
+  const [llmTemperature, setLlmTemperature] = useState("");
+  const [llmMaxTokens, setLlmMaxTokens] = useState("");
   const [showRename, setShowRename] = useState(false);
   const [renameDraft, setRenameDraft] = useState("");
   const [renameBusy, setRenameBusy] = useState(false);
@@ -163,6 +227,7 @@ export default function Home() {
     return [];
   }, [llmConfig, selectedLlmModel]);
   const authReady = !authLoading && (!authEnabled || authenticated);
+  const ui = useMemo(() => getUiText(uiLanguage), [uiLanguage]);
 
   const loadConnections = useCallback(async () => {
     setConnectionsLoading(true);
@@ -213,8 +278,8 @@ export default function Home() {
 
   const loadLlmConfig = useCallback(async () => {
     const res = await fetch("/api/llm/config", { cache: "no-store" });
-    const data = (await res.json()) as LlmConfig & { error?: string };
-    if (!res.ok) throw new Error(data.error || "加载模型配置失败");
+    const data = (await res.json()) as LlmConfig & { defaultLanguage?: UiLanguage; error?: string };
+    if (!res.ok) throw new Error(data.error || "Load model config failed");
     const options = Array.isArray(data.selectableModels) ? data.selectableModels.filter(Boolean) : [];
     const fallbackModel = data.defaultModel || options[0] || "";
     const stored = typeof window !== "undefined" ? window.localStorage.getItem(MODEL_STORAGE_KEY)?.trim() : "";
@@ -226,7 +291,11 @@ export default function Home() {
       provider: data.provider || "mock",
       defaultModel: fallbackModel,
       selectableModels: options.length ? options : [fallbackModel],
+      supportedLanguages: data.supportedLanguages,
+      providerModes: data.providerModes,
+      defaults: data.defaults,
     });
+    setUiLanguage(data.defaultLanguage === "zh" ? "zh" : "en");
     setSelectedLlmModel(resolved);
     if (typeof window !== "undefined" && resolved) {
       window.localStorage.setItem(MODEL_STORAGE_KEY, resolved);
@@ -294,6 +363,7 @@ export default function Home() {
     }
     void loadMessages(selectedConversationId);
   }, [loadMessages, selectedConversationId]);
+
 
   useEffect(() => {
     if (!listRef.current) return;
@@ -529,6 +599,176 @@ export default function Home() {
     }
   }
 
+  function applyLlmSettingToForm(setting: LlmSettingsResponse["datasource"] | LlmSettingsResponse["conversation"] | undefined | null) {
+    if (!setting) {
+      setLlmProviderMode("openrouter_simple");
+      setLlmApiKey("");
+      setLlmBaseUrl("");
+      setLlmModel("");
+      setLlmProviderLabel("");
+      setLlmExtraHeadersText("");
+      setLlmExtraQueryText("");
+      setLlmTemperature("");
+      setLlmMaxTokens("");
+      return;
+    }
+    setUiLanguage(setting.language === "zh" ? "zh" : "en");
+    setLlmProviderMode(setting.providerMode ?? "openrouter_simple");
+    setLlmApiKey(setting.apiKey ?? "");
+    setLlmBaseUrl(setting.baseUrl ?? "");
+    setLlmModel(setting.model ?? "");
+    setLlmProviderLabel(setting.providerLabel ?? "");
+    setLlmExtraHeadersText(setting.extraHeaders ? JSON.stringify(setting.extraHeaders, null, 2) : "");
+    setLlmExtraQueryText(setting.extraQueryParams ? JSON.stringify(setting.extraQueryParams, null, 2) : "");
+    setLlmTemperature(typeof setting.temperature === "number" ? String(setting.temperature) : "");
+    setLlmMaxTokens(typeof setting.maxTokens === "number" ? String(setting.maxTokens) : "");
+  }
+
+  function safeParseJsonObject(text: string, label: string) {
+    const trimmed = text.trim();
+    if (!trimmed) return undefined;
+    try {
+      const parsed = JSON.parse(trimmed) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error(`${label} must be a JSON object`);
+      }
+      return parsed as Record<string, string>;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : ui.invalidJson;
+      throw new Error(`${label}: ${message}`);
+    }
+  }
+
+  const loadLlmSettings = useCallback(async (scopeOverride?: "datasource" | "conversation") => {
+    if (!selectedConnectionId) return;
+    setLlmSettingsLoading(true);
+    setLlmSettingsStatus("");
+    try {
+      const query = new URLSearchParams({ datasourceId: selectedConnectionId });
+      if (selectedConversationId) query.set("conversationId", selectedConversationId);
+      const res = await fetch(`/api/settings/llm?${query.toString()}`, { cache: "no-store" });
+      const data = (await res.json()) as LlmSettingsResponse & { error?: string };
+      if (!res.ok) throw new Error(data.error || ui.settingsLoadFailed);
+
+      const effective = data.effective;
+      setUiLanguage(effective?.language === "zh" ? "zh" : "en");
+      const from = effective?.fromScope === "conversation"
+        ? ui.fromConversation
+        : effective?.fromScope === "datasource"
+          ? ui.fromDatasource
+          : ui.fromEnv;
+      const mode = effective?.providerMode ?? "openrouter_simple";
+      const model = effective?.model || llmConfig?.defaultModel || "";
+      setEffectiveLlmSummary(`${ui.effective}: ${from} | ${ui.mode}: ${mode} | model: ${model}`);
+
+      const targetScope = scopeOverride ?? llmSettingsScope;
+      const scoped = targetScope === "conversation" ? data.conversation : data.datasource;
+      applyLlmSettingToForm(scoped);
+      setLlmSettingsStatus(ui.settingsLoaded);
+    } catch (error) {
+      setLlmSettingsStatus(error instanceof Error ? error.message : ui.settingsLoadFailed);
+    } finally {
+      setLlmSettingsLoading(false);
+    }
+  }, [selectedConnectionId, selectedConversationId, llmSettingsScope, llmConfig?.defaultModel, ui]);
+
+  async function handleOpenLlmSettings() {
+    if (!selectedConnectionId) return;
+    setShowConnectionActions(false);
+    setShowLlmSettings(true);
+    await loadLlmSettings();
+  }
+
+  async function handleSaveLlmSettings() {
+    if (!selectedConnectionId) return;
+    if (llmSettingsScope === "conversation" && !selectedConversationId) {
+      setLlmSettingsStatus("Conversation is required for conversation override.");
+      return;
+    }
+    setLlmSettingsSaving(true);
+    setLlmSettingsStatus("");
+    try {
+      const extraHeaders = safeParseJsonObject(llmExtraHeadersText, ui.extraHeaders);
+      const extraQueryParams = safeParseJsonObject(llmExtraQueryText, ui.extraQueryParams);
+      const payload: Record<string, unknown> = {
+        language: uiLanguage,
+        providerMode: llmProviderMode,
+        apiKey: llmApiKey.trim(),
+      };
+      if (!payload.apiKey) throw new Error(`${ui.apiKey} is required`);
+      if (llmProviderMode === "openai_compatible_custom") {
+        if (!llmBaseUrl.trim()) throw new Error(`${ui.baseUrl} is required`);
+        if (!llmModel.trim()) throw new Error(`${ui.model} is required`);
+        payload.baseUrl = llmBaseUrl.trim();
+        payload.model = llmModel.trim();
+      }
+      if (llmProviderMode === "openrouter_simple" && llmModel.trim()) payload.model = llmModel.trim();
+      if (llmProviderLabel.trim()) payload.providerLabel = llmProviderLabel.trim();
+      if (extraHeaders) payload.extraHeaders = extraHeaders;
+      if (extraQueryParams) payload.extraQueryParams = extraQueryParams;
+      if (llmTemperature.trim()) payload.temperature = Number(llmTemperature);
+      if (llmMaxTokens.trim()) payload.maxTokens = Number(llmMaxTokens);
+
+      const path = llmSettingsScope === "conversation"
+        ? `/api/settings/llm/conversation/${selectedConversationId}`
+        : `/api/settings/llm/datasource/${selectedConnectionId}`;
+      const res = await fetch(path, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || ui.settingsSaveFailed);
+      setLlmSettingsStatus(ui.settingsSaved);
+      await loadLlmSettings(llmSettingsScope);
+    } catch (error) {
+      setLlmSettingsStatus(error instanceof Error ? error.message : ui.settingsSaveFailed);
+    } finally {
+      setLlmSettingsSaving(false);
+    }
+  }
+
+  async function handleResetLlmOverride() {
+    if (!selectedConnectionId) return;
+    if (llmSettingsScope === "conversation" && !selectedConversationId) {
+      setLlmSettingsStatus("Conversation is required for conversation override.");
+      return;
+    }
+    setLlmSettingsSaving(true);
+    setLlmSettingsStatus("");
+    try {
+      const path = llmSettingsScope === "conversation"
+        ? `/api/settings/llm/conversation/${selectedConversationId}`
+        : `/api/settings/llm/datasource/${selectedConnectionId}`;
+      const res = await fetch(path, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reset: true }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || ui.settingsSaveFailed);
+      setLlmSettingsStatus(ui.settingsReset);
+      await loadLlmSettings(llmSettingsScope);
+    } catch (error) {
+      setLlmSettingsStatus(error instanceof Error ? error.message : ui.settingsSaveFailed);
+    } finally {
+      setLlmSettingsSaving(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!showLlmSettings) return;
+    void loadLlmSettings(llmSettingsScope);
+  }, [showLlmSettings, llmSettingsScope, loadLlmSettings]);
+
+  useEffect(() => {
+    if (!selectedConnectionId) {
+      setEffectiveLlmSummary("");
+      return;
+    }
+    void loadLlmSettings();
+  }, [selectedConnectionId, selectedConversationId, loadLlmSettings]);
+
   async function handleRenameConnection() {
     if (!selectedConnectionId || !renameDraft.trim()) return;
     setRenameBusy(true);
@@ -632,7 +872,12 @@ export default function Home() {
     const res = await fetch(`/api/conversations/${conversationId}/messages`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, connectionId: selectedConnectionId, llmModel: selectedLlmModel || undefined }),
+      body: JSON.stringify({
+        question,
+        connectionId: selectedConnectionId,
+        llmModel: selectedLlmModel || undefined,
+        language: uiLanguage,
+      }),
     });
     const data = await res.json();
     if (!res.ok) {
@@ -1021,7 +1266,19 @@ export default function Home() {
                       {llmConfig?.defaultModel && (
                         <div className="action-model-hint">默认: {llmConfig.defaultModel}</div>
                       )}
+                      {effectiveLlmSummary && (
+                        <div className="action-model-hint">{effectiveLlmSummary}</div>
+                      )}
                     </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void handleOpenLlmSettings();
+                      }}
+                    >
+                      <Settings size={14} style={{ marginRight: 6, verticalAlign: "text-bottom" }} />
+                      {ui.settings}
+                    </button>
                     <button
                       type="button"
                       onClick={() => {
@@ -1491,6 +1748,132 @@ export default function Home() {
                 </button>
                 <button className="btn" type="submit" disabled={globalLoading}>
                   Save
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+      {showLlmSettings && (
+        <div className="modal-mask" onClick={() => !llmSettingsSaving && setShowLlmSettings(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3>{ui.settings}</h3>
+            <form
+              className="modal-form"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void handleSaveLlmSettings();
+              }}
+            >
+              <label className="conn-field full">
+                <span>{ui.scope}</span>
+                <select
+                  value={llmSettingsScope}
+                  onChange={(e) => setLlmSettingsScope(e.target.value as "datasource" | "conversation")}
+                >
+                  <option value="datasource">{ui.datasourceSettings}</option>
+                  <option value="conversation" disabled={!selectedConversationId}>
+                    {ui.conversationOverride}
+                  </option>
+                </select>
+              </label>
+
+              <label className="conn-field full">
+                <span>{ui.language}</span>
+                <select value={uiLanguage} onChange={(e) => setUiLanguage(e.target.value as UiLanguage)}>
+                  <option value="en">English</option>
+                  <option value="zh">中文</option>
+                </select>
+              </label>
+
+              <label className="conn-field full">
+                <span>{ui.providerMode}</span>
+                <select value={llmProviderMode} onChange={(e) => setLlmProviderMode(e.target.value as LlmProviderMode)}>
+                  <option value="openrouter_simple">{ui.openRouterSimple}</option>
+                  <option value="openai_compatible_custom">{ui.openaiCompatibleCustom}</option>
+                </select>
+              </label>
+
+              <label className="conn-field full">
+                <span>{ui.apiKey}</span>
+                <input
+                  value={llmApiKey}
+                  onChange={(e) => setLlmApiKey(e.target.value)}
+                  placeholder="sk-..."
+                  required
+                />
+              </label>
+
+              {llmProviderMode === "openai_compatible_custom" && (
+                <>
+                  <label className="conn-field full">
+                    <span>{ui.baseUrl}</span>
+                    <input value={llmBaseUrl} onChange={(e) => setLlmBaseUrl(e.target.value)} placeholder="https://..." required />
+                  </label>
+                  <label className="conn-field full">
+                    <span>{ui.model}</span>
+                    <input value={llmModel} onChange={(e) => setLlmModel(e.target.value)} placeholder="gpt-4.1-mini" required />
+                  </label>
+                </>
+              )}
+
+              {llmProviderMode === "openrouter_simple" && (
+                <label className="conn-field full">
+                  <span>{ui.model}</span>
+                  <input value={llmModel} onChange={(e) => setLlmModel(e.target.value)} placeholder={llmConfig?.defaultModel || ""} />
+                </label>
+              )}
+
+              <label className="conn-field full">
+                <span>{ui.providerLabel}</span>
+                <input value={llmProviderLabel} onChange={(e) => setLlmProviderLabel(e.target.value)} placeholder="OpenRouter / Custom" />
+              </label>
+
+              <label className="conn-field full">
+                <span>{ui.temperature}</span>
+                <input value={llmTemperature} onChange={(e) => setLlmTemperature(e.target.value)} placeholder="0.1" />
+              </label>
+
+              <label className="conn-field full">
+                <span>{ui.maxTokens}</span>
+                <input value={llmMaxTokens} onChange={(e) => setLlmMaxTokens(e.target.value)} placeholder="1200" />
+              </label>
+
+              {llmProviderMode === "openai_compatible_custom" && (
+                <>
+                  <label className="conn-field full">
+                    <span>{ui.extraHeaders}</span>
+                    <textarea
+                      value={llmExtraHeadersText}
+                      onChange={(e) => setLlmExtraHeadersText(e.target.value)}
+                      rows={4}
+                      placeholder='{\"x-tenant\":\"demo\"}'
+                    />
+                  </label>
+                  <label className="conn-field full">
+                    <span>{ui.extraQueryParams}</span>
+                    <textarea
+                      value={llmExtraQueryText}
+                      onChange={(e) => setLlmExtraQueryText(e.target.value)}
+                      rows={4}
+                      placeholder='{\"api-version\":\"2024-02-15\"}'
+                    />
+                  </label>
+                </>
+              )}
+
+              {(llmSettingsStatus || llmSettingsLoading) && (
+                <div className="status-msg">{llmSettingsLoading ? "Loading..." : llmSettingsStatus}</div>
+              )}
+              <div className="modal-actions">
+                <button className="btn ghost" type="button" onClick={() => void handleResetLlmOverride()} disabled={llmSettingsSaving}>
+                  {ui.resetOverride}
+                </button>
+                <button className="btn ghost" type="button" onClick={() => setShowLlmSettings(false)} disabled={llmSettingsSaving}>
+                  {ui.close}
+                </button>
+                <button className="btn" type="submit" disabled={llmSettingsSaving}>
+                  {llmSettingsSaving ? ui.saving : ui.save}
                 </button>
               </div>
             </form>

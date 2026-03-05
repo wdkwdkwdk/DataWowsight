@@ -1,4 +1,6 @@
 export type DbKind = "postgres" | "mysql" | "sqlite";
+export type UiLanguage = "en" | "zh";
+export type LlmProviderMode = "openrouter_simple" | "openai_compatible_custom";
 
 export interface DataSourceConfig {
   id: string;
@@ -117,6 +119,53 @@ export interface QueryRequest {
   sessionId?: string;
   conversationId?: string;
   llmModel?: string;
+  language?: UiLanguage;
+  llmRuntime?: ResolvedLlmRuntime;
+}
+
+export interface LlmSetting {
+  id: string;
+  scopeType: "datasource" | "conversation";
+  scopeId: string;
+  language: UiLanguage;
+  providerMode: LlmProviderMode;
+  apiKey: string;
+  baseUrl?: string;
+  model?: string;
+  providerLabel?: string;
+  extraHeaders?: Record<string, string>;
+  extraQueryParams?: Record<string, string>;
+  temperature?: number;
+  maxTokens?: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface LlmSettingInput {
+  language: UiLanguage;
+  providerMode: LlmProviderMode;
+  apiKey: string;
+  baseUrl?: string;
+  model?: string;
+  providerLabel?: string;
+  extraHeaders?: Record<string, string>;
+  extraQueryParams?: Record<string, string>;
+  temperature?: number;
+  maxTokens?: number;
+}
+
+export interface ResolvedLlmRuntime {
+  language: UiLanguage;
+  providerMode: LlmProviderMode;
+  apiKey?: string;
+  baseUrl?: string;
+  model?: string;
+  providerLabel?: string;
+  extraHeaders?: Record<string, string>;
+  extraQueryParams?: Record<string, string>;
+  temperature?: number;
+  maxTokens?: number;
+  fromScope: "conversation" | "datasource" | "env";
 }
 
 export interface ClarifyRequest {

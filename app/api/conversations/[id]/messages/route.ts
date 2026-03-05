@@ -32,6 +32,7 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
       question: parsed.data.question,
       sessionId: id,
       llmModel: parsed.data.llmModel,
+      language: parsed.data.language,
     });
 
     return ok(result);

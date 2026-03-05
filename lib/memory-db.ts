@@ -1,5 +1,16 @@
 import { sql } from "@vercel/postgres";
-import type { BusinessTerm, ChatConversation, ChatMessage, DataSourceConfig, RunEvent, SchemaEntity } from "./types";
+import type {
+  BusinessTerm,
+  ChatConversation,
+  ChatMessage,
+  DataSourceConfig,
+  LlmSetting,
+  LlmSettingInput,
+  ResolvedLlmRuntime,
+  RunEvent,
+  SchemaEntity,
+  UiLanguage,
+} from "./types";
 
 let initPromise: Promise<void> | null = null;
 
@@ -147,6 +158,26 @@ async function ensureSchema() {
         );
       `;
       await sql`create index if not exists idx_run_events_run_created on run_events(run_id, created_at asc);`;
+      await sql`
+        create table if not exists llm_settings (
+          id text primary key,
+          scope_type text not null,
+          scope_id text not null,
+          language text not null default 'en',
+          provider_mode text not null,
+          api_key text not null,
+          base_url text,
+          model text,
+          provider_label text,
+          extra_headers_json jsonb,
+          extra_query_params_json jsonb,
+          temperature numeric,
+          max_tokens integer,
+          created_at timestamptz not null default now(),
+          updated_at timestamptz not null default now(),
+          unique(scope_type, scope_id)
+        );
+      `;
     })();
   }
 
@@ -160,6 +191,26 @@ function mapDatasource(row: Record<string, unknown>): DataSourceConfig {
     kind: row.kind as DataSourceConfig["kind"],
     uri: String(row.uri),
     createdAt: new Date(String(row.created_at)).toISOString(),
+  };
+}
+
+function mapLlmSetting(row: Record<string, unknown>): LlmSetting {
+  return {
+    id: String(row.id),
+    scopeType: row.scope_type as LlmSetting["scopeType"],
+    scopeId: String(row.scope_id),
+    language: (row.language as UiLanguage) || "en",
+    providerMode: row.provider_mode as LlmSetting["providerMode"],
+    apiKey: String(row.api_key ?? ""),
+    baseUrl: row.base_url ? String(row.base_url) : undefined,
+    model: row.model ? String(row.model) : undefined,
+    providerLabel: row.provider_label ? String(row.provider_label) : undefined,
+    extraHeaders: (row.extra_headers_json as Record<string, string> | null) ?? undefined,
+    extraQueryParams: (row.extra_query_params_json as Record<string, string> | null) ?? undefined,
+    temperature: row.temperature == null ? undefined : Number(row.temperature),
+    maxTokens: row.max_tokens == null ? undefined : Number(row.max_tokens),
+    createdAt: new Date(String(row.created_at)).toISOString(),
+    updatedAt: new Date(String(row.updated_at)).toISOString(),
   };
 }
 
@@ -192,6 +243,132 @@ export async function renameDatasource(id: string, name: string) {
     set name = ${name}
     where id = ${id}
   `;
+}
+
+export async function getLlmSetting(scopeType: "datasource" | "conversation", scopeId: string): Promise<LlmSetting | null> {
+  await ensureSchema();
+  const res = await sql`
+    select * from llm_settings
+    where scope_type = ${scopeType}
+      and scope_id = ${scopeId}
+    limit 1
+  `;
+  if (!res.rows.length) return null;
+  return mapLlmSetting(res.rows[0]);
+}
+
+export async function upsertLlmSetting(
+  scopeType: "datasource" | "conversation",
+  scopeId: string,
+  input: LlmSettingInput,
+): Promise<LlmSetting> {
+  await ensureSchema();
+  const id = `${scopeType}:${scopeId}`;
+  const language = input.language || "en";
+  await sql`
+    insert into llm_settings (
+      id, scope_type, scope_id, language, provider_mode, api_key,
+      base_url, model, provider_label, extra_headers_json, extra_query_params_json,
+      temperature, max_tokens, created_at, updated_at
+    ) values (
+      ${id}, ${scopeType}, ${scopeId}, ${language}, ${input.providerMode}, ${input.apiKey},
+      ${input.baseUrl ?? null}, ${input.model ?? null}, ${input.providerLabel ?? null},
+      ${input.extraHeaders ? JSON.stringify(input.extraHeaders) : null}::jsonb,
+      ${input.extraQueryParams ? JSON.stringify(input.extraQueryParams) : null}::jsonb,
+      ${input.temperature ?? null}, ${input.maxTokens ?? null}, now(), now()
+    )
+    on conflict (scope_type, scope_id)
+    do update set
+      language = excluded.language,
+      provider_mode = excluded.provider_mode,
+      api_key = excluded.api_key,
+      base_url = excluded.base_url,
+      model = excluded.model,
+      provider_label = excluded.provider_label,
+      extra_headers_json = excluded.extra_headers_json,
+      extra_query_params_json = excluded.extra_query_params_json,
+      temperature = excluded.temperature,
+      max_tokens = excluded.max_tokens,
+      updated_at = now()
+  `;
+  const saved = await getLlmSetting(scopeType, scopeId);
+  if (!saved) throw new Error("Failed to persist llm settings");
+  return saved;
+}
+
+export async function deleteLlmSetting(scopeType: "datasource" | "conversation", scopeId: string) {
+  await ensureSchema();
+  await sql`
+    delete from llm_settings
+    where scope_type = ${scopeType}
+      and scope_id = ${scopeId}
+  `;
+}
+
+export async function resolveEffectiveLlmSettings(input: {
+  datasourceId: string;
+  conversationId?: string;
+}): Promise<{
+  effective: ResolvedLlmRuntime;
+  datasource: LlmSetting | null;
+  conversation: LlmSetting | null;
+}> {
+  const datasource = await getLlmSetting("datasource", input.datasourceId);
+  const conversation = input.conversationId ? await getLlmSetting("conversation", input.conversationId) : null;
+  const selected = conversation ?? datasource;
+  if (selected) {
+    return {
+      effective: {
+        language: selected.language,
+        providerMode: selected.providerMode,
+        apiKey: selected.apiKey,
+        baseUrl: selected.baseUrl,
+        model: selected.model,
+        providerLabel: selected.providerLabel,
+        extraHeaders: selected.extraHeaders,
+        extraQueryParams: selected.extraQueryParams,
+        temperature: selected.temperature,
+        maxTokens: selected.maxTokens,
+        fromScope: conversation ? "conversation" : "datasource",
+      },
+      datasource,
+      conversation,
+    };
+  }
+  return {
+    effective: resolveEnvDefaultLlmRuntime(),
+    datasource,
+    conversation,
+  };
+}
+
+function resolveEnvDefaultLlmRuntime(): ResolvedLlmRuntime {
+  const language = normalizeLanguage(process.env.APP_DEFAULT_LANGUAGE);
+  const provider = process.env.LLM_PROVIDER ?? "openrouter";
+  if (provider === "openrouter") {
+    return {
+      language,
+      providerMode: "openrouter_simple",
+      apiKey: process.env.OPENROUTER_API_KEY,
+      baseUrl: process.env.OPENROUTER_BASE_URL ?? "https://openrouter.ai/api/v1",
+      model: process.env.OPENROUTER_MODEL ?? "google/gemini-3-flash-preview",
+      providerLabel: "OpenRouter",
+      fromScope: "env",
+    };
+  }
+  return {
+    language,
+    providerMode: "openai_compatible_custom",
+    apiKey: process.env.OPENAI_API_KEY,
+    baseUrl: process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1",
+    model: process.env.OPENAI_MODEL ?? "gpt-4.1-mini",
+    providerLabel: provider,
+    fromScope: "env",
+  };
+}
+
+function normalizeLanguage(value: string | undefined): UiLanguage {
+  return value?.toLowerCase() === "zh" ? "zh" : "en";
 }
 
 export async function saveSchemaEntities(entities: SchemaEntity[]) {
@@ -544,6 +721,7 @@ export async function listRunEvents(runId: string, sinceId?: number): Promise<Ru
 
 export async function deleteConversationCascade(conversationId: string) {
   await ensureSchema();
+  await deleteLlmSetting("conversation", conversationId);
   await sql`
     delete from run_events
     where conversation_id = ${conversationId}
@@ -585,6 +763,7 @@ export async function deleteDatasourceCascade(datasourceId: string) {
   for (const c of conversations) {
     await deleteConversationCascade(c.id);
   }
+  await deleteLlmSetting("datasource", datasourceId);
 
   await sql`
     delete from analysis_sql_steps

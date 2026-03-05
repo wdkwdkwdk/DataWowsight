@@ -1,4 +1,5 @@
 import { ANALYSIS_DEFAULTS } from "../config";
+import type { LlmProviderMode, ResolvedLlmRuntime, UiLanguage } from "../types";
 
 export interface LlmMessage {
   role: "system" | "user" | "assistant";
@@ -7,12 +8,28 @@ export interface LlmMessage {
 
 export interface CallLlmOptions {
   modelOverride?: string;
+  runtime?: ResolvedLlmRuntime;
 }
 
 export interface LlmRuntimeConfig {
   provider: string;
   defaultModel: string;
   selectableModels: string[];
+  supportedLanguages: UiLanguage[];
+  defaultLanguage: UiLanguage;
+  providerModes: LlmProviderMode[];
+  defaults: {
+    openrouterSimple: {
+      baseUrl: string;
+      model: string;
+      appUrl: string;
+      appName: string;
+    };
+    openaiCompatible: {
+      baseUrl: string;
+      model: string;
+    };
+  };
 }
 
 export function getLlmRuntimeConfig(): LlmRuntimeConfig {
@@ -22,10 +39,34 @@ export function getLlmRuntimeConfig(): LlmRuntimeConfig {
     provider === "openrouter"
       ? uniqueNonEmpty([defaultModel, "minimax/minimax-m2.5", "moonshotai/kimi-k2.5"])
       : [defaultModel];
-  return { provider, defaultModel, selectableModels };
+  return {
+    provider,
+    defaultModel,
+    selectableModels,
+    supportedLanguages: ["en", "zh"],
+    defaultLanguage: normalizeLanguage(process.env.APP_DEFAULT_LANGUAGE),
+    providerModes: ["openrouter_simple", "openai_compatible_custom"],
+    defaults: {
+      openrouterSimple: {
+        baseUrl: process.env.OPENROUTER_BASE_URL ?? "https://openrouter.ai/api/v1",
+        model: process.env.OPENROUTER_MODEL ?? "google/gemini-3-flash-preview",
+        appUrl: process.env.OPENROUTER_APP_URL ?? "http://localhost:3000",
+        appName: process.env.OPENROUTER_APP_NAME ?? "DataWowsight",
+      },
+      openaiCompatible: {
+        baseUrl: process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1",
+        model: process.env.OPENAI_MODEL ?? "gpt-4.1-mini",
+      },
+    },
+  };
 }
 
 export async function callLlm(messages: LlmMessage[], options?: CallLlmOptions): Promise<string> {
+  const runtime = options?.runtime;
+  if (runtime) {
+    return callByResolvedRuntime(messages, runtime, options?.modelOverride);
+  }
+
   const provider = process.env.LLM_PROVIDER ?? "mock";
   const modelOverride = options?.modelOverride?.trim();
   if (provider === "openrouter") {
@@ -45,6 +86,49 @@ export async function callLlm(messages: LlmMessage[], options?: CallLlmOptions):
   }
 
   return mockReply(messages);
+}
+
+async function callByResolvedRuntime(messages: LlmMessage[], runtime: ResolvedLlmRuntime, modelOverride?: string) {
+  if (runtime.providerMode === "openrouter_simple") {
+    const apiKey = runtime.apiKey?.trim();
+    if (!apiKey) return mockReply(messages);
+    const defaults = getLlmRuntimeConfig().defaults.openrouterSimple;
+    const model = modelOverride?.trim() || runtime.model || defaults.model;
+    const baseUrl = runtime.baseUrl || defaults.baseUrl;
+    const appUrl = process.env.OPENROUTER_APP_URL ?? defaults.appUrl;
+    const appName = process.env.OPENROUTER_APP_NAME ?? defaults.appName;
+    logLlmRequest("openrouter", model, messages);
+    return callOpenAiCompatible({
+      apiKey,
+      model,
+      messages,
+      baseUrl,
+      extraHeaders: {
+        "HTTP-Referer": appUrl,
+        "X-Title": appName,
+      },
+      temperature: runtime.temperature,
+      maxTokens: runtime.maxTokens,
+      extraQueryParams: runtime.extraQueryParams,
+    });
+  }
+
+  const apiKey = runtime.apiKey?.trim();
+  const baseUrl = runtime.baseUrl?.trim();
+  const model = (modelOverride?.trim() || runtime.model || "").trim();
+  if (!apiKey || !baseUrl || !model) return mockReply(messages);
+
+  logLlmRequest(runtime.providerLabel || "openai-compatible", model, messages);
+  return callOpenAiCompatible({
+    apiKey,
+    model,
+    messages,
+    baseUrl,
+    extraHeaders: runtime.extraHeaders,
+    temperature: runtime.temperature,
+    maxTokens: runtime.maxTokens,
+    extraQueryParams: runtime.extraQueryParams,
+  });
 }
 
 async function callOpenAI(messages: LlmMessage[], modelOverride?: string) {
@@ -89,8 +173,12 @@ async function callOpenAiCompatible(input: {
   messages: LlmMessage[];
   baseUrl: string;
   extraHeaders?: Record<string, string>;
+  temperature?: number;
+  maxTokens?: number;
+  extraQueryParams?: Record<string, string>;
 }) {
-  const res = await fetchWithTimeout(`${input.baseUrl}/chat/completions`, {
+  const url = buildOpenAiCompatibleUrl(input.baseUrl, input.extraQueryParams);
+  const res = await fetchWithTimeout(url, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${input.apiKey}`,
@@ -99,7 +187,8 @@ async function callOpenAiCompatible(input: {
     },
     body: JSON.stringify({
       model: input.model,
-      temperature: 0.1,
+      temperature: input.temperature ?? 0.1,
+      ...(typeof input.maxTokens === "number" ? { max_tokens: input.maxTokens } : {}),
       messages: input.messages,
     }),
   });
@@ -268,4 +357,19 @@ function uniqueNonEmpty(items: string[]) {
     out.push(value);
   }
   return out;
+}
+
+function buildOpenAiCompatibleUrl(baseUrl: string, extraQueryParams?: Record<string, string>) {
+  const normalizedBase = baseUrl.endsWith("/") ? baseUrl.slice(0, -1) : baseUrl;
+  const url = new URL(`${normalizedBase}/chat/completions`);
+  for (const [k, v] of Object.entries(extraQueryParams ?? {})) {
+    const key = k.trim();
+    if (!key) continue;
+    url.searchParams.set(key, String(v));
+  }
+  return url.toString();
+}
+
+function normalizeLanguage(value: string | undefined): UiLanguage {
+  return value?.toLowerCase() === "zh" ? "zh" : "en";
 }

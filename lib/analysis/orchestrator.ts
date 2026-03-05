@@ -16,6 +16,7 @@ import {
   insertSqlAuditLog,
   insertSqlStep,
   listMessages,
+  resolveEffectiveLlmSettings,
   touchRun,
   touchConversation,
   updateRunStatus,
@@ -24,7 +25,18 @@ import {
 } from "../memory-db";
 import { ensureSafeReadOnlySql } from "../sql-safety";
 import { withTargetDb } from "../target-db/client";
-import type { AnalysisDebugLog, AnalysisPlanStep, ClarifyRequest, DbKind, InsightChart, InsightReport, QueryRequest, RunEvent } from "../types";
+import type {
+  AnalysisDebugLog,
+  AnalysisPlanStep,
+  ClarifyRequest,
+  DbKind,
+  InsightChart,
+  InsightReport,
+  QueryRequest,
+  ResolvedLlmRuntime,
+  RunEvent,
+  UiLanguage,
+} from "../types";
 import {
   buildChartPlannerSystemPrompt,
   buildChartPlannerUserPayload,
@@ -128,6 +140,18 @@ export async function runAnalysisQuery(input: QueryRequest) {
     payload: { question: input.question },
   });
 
+  const resolved = input.llmRuntime
+    ? { effective: input.llmRuntime }
+    : await resolveEffectiveLlmSettings({
+      datasourceId: datasource.id,
+      conversationId,
+    });
+  const language = input.language ?? resolved.effective.language ?? "en";
+  const llmRuntime = {
+    ...resolved.effective,
+    language,
+  } as ResolvedLlmRuntime;
+
   void executeAnalysisInBackground({
     runId,
     conversationId,
@@ -137,6 +161,8 @@ export async function runAnalysisQuery(input: QueryRequest) {
     dbKind: datasource.kind,
     question: input.question,
     llmModel: input.llmModel,
+    language,
+    llmRuntime,
     context,
   });
 
@@ -179,6 +205,8 @@ async function executeAnalysisInBackground(input: {
   dbKind: DbKind;
   question: string;
   llmModel?: string;
+  language: UiLanguage;
+  llmRuntime?: ResolvedLlmRuntime;
   context: Record<string, unknown>;
 }) {
   if (activeRunWorkers.has(input.runId)) {
@@ -207,6 +235,8 @@ async function executeAnalysisInBackground(input: {
       dbKind: input.dbKind,
       question: input.question,
       llmModel: input.llmModel,
+      language: input.language,
+      llmRuntime: input.llmRuntime,
       onProgress: async (progress) => {
         await updateRunStatus(input.runId, "running", { progress });
         await createRunEvent({
@@ -262,11 +292,12 @@ async function executeAnalysisInBackground(input: {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
+    const failPrefix = input.language === "zh" ? "分析失败：" : "Analysis failed: ";
     await createMessage({
       id: randomUUID(),
       conversationId: input.conversationId,
       role: "assistant",
-      content: `分析失败：${message}`,
+      content: `${failPrefix}${message}`,
     });
     await createRunEvent({
       runId: input.runId,
@@ -322,6 +353,10 @@ export async function tryResumeRun(
   if (!datasource) {
     return { resumed: false, reason: "missing_context" };
   }
+  const resolved = await resolveEffectiveLlmSettings({
+    datasourceId: session.connectionId,
+    conversationId: run.sessionId,
+  });
 
   void executeAnalysisInBackground({
     runId: run.id,
@@ -331,6 +366,8 @@ export async function tryResumeRun(
     uri: datasource.uri,
     dbKind: datasource.kind,
     question: run.question,
+    language: resolved.effective.language,
+    llmRuntime: resolved.effective,
     context: session.context,
   });
 
@@ -346,6 +383,8 @@ async function executeAnalysis(input: {
   dbKind: DbKind;
   question: string;
   llmModel?: string;
+  language: UiLanguage;
+  llmRuntime?: ResolvedLlmRuntime;
   onProgress?: (progress: ProgressState) => Promise<void>;
   onEvent?: (eventType: RunEvent["eventType"], step: number, payload: Record<string, unknown>) => Promise<void>;
 }): Promise<InsightReport> {
@@ -400,6 +439,8 @@ async function executeAnalysis(input: {
         question: input.question,
         dbKind: input.dbKind,
         llmModel: input.llmModel,
+        language: input.language,
+        llmRuntime: input.llmRuntime,
         forceLightweightMode,
         lastTimeoutSql: getLastTimeoutSql(traces),
         entities: readyEntities,
@@ -749,9 +790,21 @@ async function executeAnalysis(input: {
   });
 
   const rawSummary =
-    llmFinalSummary ?? (await synthesizeFinalSummary(input.question, evidence, traces, datasourceNote, input.llmModel, pushDebugLog));
+    llmFinalSummary
+    ?? (await synthesizeFinalSummary(
+      input.question,
+      evidence,
+      traces,
+      datasourceNote,
+      input.llmModel,
+      input.language,
+      input.llmRuntime,
+      pushDebugLog,
+    ));
   const summary = normalizeFinalSummaryText(rawSummary);
-  const chart = llmWantsChart ? await buildInsightChart(input.question, summary, resultSets, input.llmModel, pushDebugLog) : undefined;
+  const chart = llmWantsChart
+    ? await buildInsightChart(input.question, summary, resultSets, input.llmModel, input.language, input.llmRuntime, pushDebugLog)
+    : undefined;
   const resultTable = shouldIncludeResultTable(input.question) ? buildResultTable(resultSets) : undefined;
 
   return {
@@ -770,6 +823,8 @@ async function planNextAction(input: {
   question: string;
   dbKind: DbKind;
   llmModel?: string;
+  language: UiLanguage;
+  llmRuntime?: ResolvedLlmRuntime;
   forceLightweightMode?: boolean;
   lastTimeoutSql?: string;
   entities: Array<{ tableName: string; columns: Array<{ name: string; dataType: string }> }>;
@@ -782,8 +837,8 @@ async function planNextAction(input: {
 }): Promise<PlannerAction> {
   const allTableNames = input.entities.map((e) => e.tableName).sort((a, b) => a.localeCompare(b));
   const plannerSystemPrompt = input.forceLightweightMode
-    ? buildPlannerTimeoutSystemPrompt()
-    : buildPlannerStage1SystemPrompt();
+    ? buildPlannerTimeoutSystemPrompt(input.language)
+    : buildPlannerStage1SystemPrompt(input.language);
   const plannerUserContext = buildPlannerStage1UserContext({
     question: input.question,
     dbKind: input.dbKind,
@@ -796,6 +851,7 @@ async function planNextAction(input: {
     entitiesCount: input.entities.length,
     traces: input.traces,
     evidence: input.evidence,
+    language: input.language,
   });
   const maxFormatFailures = 3;
   let failures = 0;
@@ -808,7 +864,10 @@ async function planNextAction(input: {
       detail: failures === 0 ? "initial" : `retry_${failures}`,
       payload: JSON.stringify([
         { role: "system", content: plannerSystemPrompt },
-        { role: "user", content: failures === 0 ? plannerUserContext : buildPlannerStage1RetryContext(plannerUserContext, failures, lastRaw) },
+        {
+          role: "user",
+          content: failures === 0 ? plannerUserContext : buildPlannerStage1RetryContext(plannerUserContext, failures, lastRaw, input.language),
+        },
       ]),
     });
     const llmRaw = await callLlm([
@@ -821,9 +880,9 @@ async function planNextAction(input: {
         content:
           failures === 0
             ? plannerUserContext
-            : buildPlannerStage1RetryContext(plannerUserContext, failures, lastRaw),
+            : buildPlannerStage1RetryContext(plannerUserContext, failures, lastRaw, input.language),
       },
-    ], { modelOverride: input.llmModel });
+    ], { modelOverride: input.llmModel, runtime: input.llmRuntime });
 
     lastRaw = (llmRaw ?? "").trim();
     input.onDebugLog?.({
@@ -856,6 +915,8 @@ async function planNextAction(input: {
           question: input.question,
           dbKind: input.dbKind,
           llmModel: input.llmModel,
+          language: input.language,
+          llmRuntime: input.llmRuntime,
           forceLightweightMode: input.forceLightweightMode,
           lastTimeoutSql: input.lastTimeoutSql,
           stepIndex: input.stepIndex,
@@ -890,6 +951,8 @@ async function generateSqlFromSelectedTables(input: {
   question: string;
   dbKind: DbKind;
   llmModel?: string;
+  language: UiLanguage;
+  llmRuntime?: ResolvedLlmRuntime;
   forceLightweightMode?: boolean;
   lastTimeoutSql?: string;
   stepIndex: number;
@@ -903,8 +966,8 @@ async function generateSqlFromSelectedTables(input: {
   onDebugLog?: (log: Omit<AnalysisDebugLog, "ts">) => void;
 }): Promise<PlannerAction> {
   const sqlWriterSystemPrompt = input.forceLightweightMode
-    ? buildSqlWriterTimeoutSystemPrompt()
-    : buildSqlWriterSystemPrompt();
+    ? buildSqlWriterTimeoutSystemPrompt(input.language)
+    : buildSqlWriterSystemPrompt(input.language);
   const sqlWriterUserContext = buildSqlWriterUserContext({
     question: input.question,
     dbKind: input.dbKind,
@@ -918,6 +981,7 @@ async function generateSqlFromSelectedTables(input: {
     seedRationale: input.seedRationale,
     traces: input.traces,
     evidence: input.evidence,
+    language: input.language,
   });
 
   const maxFormatFailures = 3;
@@ -931,7 +995,10 @@ async function generateSqlFromSelectedTables(input: {
       detail: failures === 0 ? "initial" : `retry_${failures}`,
       payload: JSON.stringify([
         { role: "system", content: sqlWriterSystemPrompt },
-        { role: "user", content: failures === 0 ? sqlWriterUserContext : buildSqlWriterRetryContext(sqlWriterUserContext, failures, lastRaw) },
+        {
+          role: "user",
+          content: failures === 0 ? sqlWriterUserContext : buildSqlWriterRetryContext(sqlWriterUserContext, failures, lastRaw, input.language),
+        },
       ]),
     });
 
@@ -942,9 +1009,9 @@ async function generateSqlFromSelectedTables(input: {
         content:
           failures === 0
             ? sqlWriterUserContext
-            : buildSqlWriterRetryContext(sqlWriterUserContext, failures, lastRaw),
+            : buildSqlWriterRetryContext(sqlWriterUserContext, failures, lastRaw, input.language),
       },
-    ], { modelOverride: input.llmModel });
+    ], { modelOverride: input.llmModel, runtime: input.llmRuntime });
 
     lastRaw = (llmRaw ?? "").trim();
     input.onDebugLog?.({
@@ -1147,10 +1214,12 @@ async function synthesizeFinalSummary(
   traces: AnalysisPlanStep[],
   datasourceNote: string,
   llmModel: string | undefined,
+  language: UiLanguage,
+  llmRuntime: ResolvedLlmRuntime | undefined,
   onDebugLog?: (log: Omit<AnalysisDebugLog, "ts">) => void,
 ) {
   try {
-    const reqPayload = buildSummaryUserPayload(question, evidence, traces, datasourceNote);
+    const reqPayload = buildSummaryUserPayload(question, evidence, traces, datasourceNote, language);
     onDebugLog?.({
       kind: "llm_request",
       title: "summary",
@@ -1159,13 +1228,13 @@ async function synthesizeFinalSummary(
     const out = await callLlm([
       {
         role: "system",
-        content: buildSummarySystemPrompt(),
+        content: buildSummarySystemPrompt(language),
       },
       {
         role: "user",
         content: reqPayload,
       },
-    ], { modelOverride: llmModel });
+    ], { modelOverride: llmModel, runtime: llmRuntime });
     onDebugLog?.({
       kind: "llm_response",
       title: "summary",
@@ -1179,9 +1248,14 @@ async function synthesizeFinalSummary(
 
   if (evidence.length > 0) {
     const lines = evidence.slice(0, 3).map((e) => `- ${e.label}: ${e.value}`).join("\n");
-    return `基于当前取证，先给出关键结果：\n${lines}\n可继续补充更明确的口径（时间范围/指标定义）以获得更精确结论。`;
+    if (language === "zh") {
+      return `基于当前取证，先给出关键结果：\n${lines}\n可继续补充更明确的口径（时间范围/指标定义）以获得更精确结论。`;
+    }
+    return `Based on current evidence, here are the key findings:\n${lines}\nYou can provide clearer definitions (time range/metric definitions) for a more precise answer.`;
   }
-  return "当前未拿到有效证据，请重试并补充更明确的口径（时间范围、指标定义、目标对象）。";
+  return language === "zh"
+    ? "当前未拿到有效证据，请重试并补充更明确的口径（时间范围、指标定义、目标对象）。"
+    : "No valid evidence was retrieved yet. Please retry with clearer scope (time range, metric definition, target entity).";
 }
 
 async function buildInsightChart(
@@ -1189,6 +1263,8 @@ async function buildInsightChart(
   summary: string,
   resultSets: Array<{ title: string; sql: string; rows: Array<Record<string, unknown>> }>,
   llmModel: string | undefined,
+  language: UiLanguage,
+  llmRuntime: ResolvedLlmRuntime | undefined,
   onDebugLog?: (log: Omit<AnalysisDebugLog, "ts">) => void,
 ): Promise<InsightChart | undefined> {
   const candidates = resultSets
@@ -1203,7 +1279,7 @@ async function buildInsightChart(
   if (!candidates.length) return undefined;
 
   try {
-    const reqPayload = buildChartPlannerUserPayload(question, summary, candidates);
+    const reqPayload = buildChartPlannerUserPayload(question, summary, candidates, language);
     onDebugLog?.({
       kind: "llm_request",
       title: "chart_planner",
@@ -1212,13 +1288,13 @@ async function buildInsightChart(
     const raw = await callLlm([
       {
         role: "system",
-        content: buildChartPlannerSystemPrompt(),
+        content: buildChartPlannerSystemPrompt(language),
       },
       {
         role: "user",
         content: reqPayload,
       },
-    ], { modelOverride: llmModel });
+    ], { modelOverride: llmModel, runtime: llmRuntime });
     onDebugLog?.({
       kind: "llm_response",
       title: "chart_planner",
