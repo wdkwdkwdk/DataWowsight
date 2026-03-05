@@ -5,7 +5,7 @@ export const ANALYSIS_DEFAULTS = {
   maxSqlPerRun: 8,
   maxRowsPerQuery: 200,
   queryTimeoutMs: 100_000,
-  runBudgetMs: 120_000,
+  runBudgetMs: 260_000,
   llmTimeoutMs: 8_000,
   defaultRecentDays: 30,
 };

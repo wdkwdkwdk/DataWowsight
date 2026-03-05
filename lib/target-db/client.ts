@@ -150,7 +150,12 @@ export async function withTargetDb<T>(uri: string, fn: (client: TargetDbClient) 
   try {
     return await fn(client);
   } finally {
-    await client.close();
+    try {
+      await withPromiseTimeout(client.close(), 10_000, "db close timeout");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "unknown close error";
+      console.warn(`[target-db] close skipped due to timeout/error: ${message}`);
+    }
   }
 }
 
@@ -170,11 +175,11 @@ async function loadSqlite3(): Promise<Sqlite3Module> {
   }
 }
 
-async function withPromiseTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+async function withPromiseTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage?: string): Promise<T> {
   let timeoutRef: ReturnType<typeof setTimeout> | null = null;
   const timeoutPromise = new Promise<T>((_, reject) => {
     timeoutRef = setTimeout(() => {
-      reject(new Error(`statement timeout after ${timeoutMs}ms`));
+      reject(new Error(timeoutMessage ?? `statement timeout after ${timeoutMs}ms`));
     }, timeoutMs);
   });
   try {
