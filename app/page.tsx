@@ -192,13 +192,11 @@ export default function Home() {
   const [llmConfig, setLlmConfig] = useState<LlmConfig | null>(null);
   const [uiLanguage, setUiLanguage] = useState<UiLanguage>("en");
   const [showLlmSettings, setShowLlmSettings] = useState(false);
-  const [llmSettingsScope, setLlmSettingsScope] = useState<"datasource" | "conversation">("datasource");
   const [llmSettingsLoading, setLlmSettingsLoading] = useState(false);
   const [llmSettingsSaving, setLlmSettingsSaving] = useState(false);
   const [llmSettingsStatus, setLlmSettingsStatus] = useState("");
   const [effectiveLlmSummary, setEffectiveLlmSummary] = useState("");
   const [llmProviderMode, setLlmProviderMode] = useState<LlmProviderMode>("openrouter_simple");
-  const [llmApiKeySource, setLlmApiKeySource] = useState<ApiKeySource>("manual");
   const [llmApiKey, setLlmApiKey] = useState("");
   const [llmBaseUrl, setLlmBaseUrl] = useState("");
   const [llmModel, setLlmModel] = useState("");
@@ -589,7 +587,6 @@ export default function Home() {
   function applyLlmSettingToForm(setting: LlmSettingsResponse["datasource"] | LlmSettingsResponse["conversation"] | undefined | null) {
     if (!setting) {
       setLlmProviderMode("openrouter_simple");
-      setLlmApiKeySource("manual");
       setLlmApiKey("");
       setLlmBaseUrl("");
       setLlmModel("");
@@ -601,8 +598,7 @@ export default function Home() {
       return;
     }
     setLlmProviderMode(setting.providerMode ?? "openrouter_simple");
-    setLlmApiKeySource(setting.apiKeySource === "env" ? "env" : "manual");
-    setLlmApiKey(setting.apiKey ?? "");
+    setLlmApiKey(setting.apiKeySource === "env" ? "" : (setting.apiKey ?? ""));
     setLlmBaseUrl(setting.baseUrl ?? "");
     setLlmModel(setting.model ?? "");
     setLlmProviderLabel(setting.providerLabel ?? "");
@@ -627,7 +623,7 @@ export default function Home() {
     }
   }
 
-  const loadLlmSettings = useCallback(async (scopeOverride?: "datasource" | "conversation") => {
+  const loadLlmSettings = useCallback(async () => {
     if (!selectedConnectionId) return;
     setLlmSettingsLoading(true);
     setLlmSettingsStatus("");
@@ -649,16 +645,14 @@ export default function Home() {
       const model = effective?.model || llmConfig?.defaultModel || "";
       setEffectiveLlmSummary(`${ui.effective}: ${from} | ${ui.mode}: ${mode} | model: ${model}`);
 
-      const targetScope = scopeOverride ?? llmSettingsScope;
-      const scoped = targetScope === "conversation" ? data.conversation : data.datasource;
-      applyLlmSettingToForm(scoped);
+      applyLlmSettingToForm(data.datasource);
       setLlmSettingsStatus("Settings loaded");
     } catch (error) {
       setLlmSettingsStatus(error instanceof Error ? error.message : "Failed to load settings");
     } finally {
       setLlmSettingsLoading(false);
     }
-  }, [selectedConnectionId, selectedConversationId, llmSettingsScope, llmConfig?.defaultModel, ui]);
+  }, [selectedConnectionId, selectedConversationId, llmConfig?.defaultModel, ui]);
 
   async function handleOpenLlmSettings() {
     if (!selectedConnectionId) return;
@@ -669,25 +663,20 @@ export default function Home() {
 
   async function handleSaveLlmSettings() {
     if (!selectedConnectionId) return;
-    if (llmSettingsScope === "conversation" && !selectedConversationId) {
-      setLlmSettingsStatus("Conversation is required for conversation override.");
-      return;
-    }
     setLlmSettingsSaving(true);
     setLlmSettingsStatus("");
     try {
       const extraHeaders = safeParseJsonObject(llmExtraHeadersText, ui.extraHeaders);
       const extraQueryParams = safeParseJsonObject(llmExtraQueryText, ui.extraQueryParams);
+      const manualApiKey = llmApiKey.trim();
+      const useEnvApiKey = llmProviderMode === "openrouter_simple" && openrouterEnvKeyAvailable && !manualApiKey;
       const payload: Record<string, unknown> = {
         language: uiLanguage,
         providerMode: llmProviderMode,
-        apiKeySource: llmProviderMode === "openrouter_simple" ? llmApiKeySource : "manual",
-        apiKey: llmApiKey.trim(),
+        apiKeySource: useEnvApiKey ? "env" : "manual",
+        apiKey: useEnvApiKey ? "" : manualApiKey,
       };
-      if (llmProviderMode === "openrouter_simple" && llmApiKeySource === "env") {
-        if (!openrouterEnvKeyAvailable) throw new Error("OPENROUTER_API_KEY is not configured in environment");
-        payload.apiKey = "";
-      } else if (!payload.apiKey) {
+      if (!payload.apiKey && !useEnvApiKey) {
         throw new Error("API key is required");
       }
       if (llmProviderMode === "openai_compatible_custom") {
@@ -703,9 +692,7 @@ export default function Home() {
       if (llmTemperature.trim()) payload.temperature = Number(llmTemperature);
       if (llmMaxTokens.trim()) payload.maxTokens = Number(llmMaxTokens);
 
-      const path = llmSettingsScope === "conversation"
-        ? `/api/settings/llm/conversation/${selectedConversationId}`
-        : `/api/settings/llm/datasource/${selectedConnectionId}`;
+      const path = `/api/settings/llm/datasource/${selectedConnectionId}`;
       const res = await fetch(path, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -714,7 +701,7 @@ export default function Home() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to save settings");
       setLlmSettingsStatus("Settings saved");
-      await loadLlmSettings(llmSettingsScope);
+      await loadLlmSettings();
     } catch (error) {
       setLlmSettingsStatus(error instanceof Error ? error.message : "Failed to save settings");
     } finally {
@@ -724,16 +711,10 @@ export default function Home() {
 
   async function handleResetLlmOverride() {
     if (!selectedConnectionId) return;
-    if (llmSettingsScope === "conversation" && !selectedConversationId) {
-      setLlmSettingsStatus("Conversation is required for conversation override.");
-      return;
-    }
     setLlmSettingsSaving(true);
     setLlmSettingsStatus("");
     try {
-      const path = llmSettingsScope === "conversation"
-        ? `/api/settings/llm/conversation/${selectedConversationId}`
-        : `/api/settings/llm/datasource/${selectedConnectionId}`;
+      const path = `/api/settings/llm/datasource/${selectedConnectionId}`;
       const res = await fetch(path, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -742,7 +723,7 @@ export default function Home() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to save settings");
       setLlmSettingsStatus("Override reset");
-      await loadLlmSettings(llmSettingsScope);
+      await loadLlmSettings();
     } catch (error) {
       setLlmSettingsStatus(error instanceof Error ? error.message : "Failed to save settings");
     } finally {
@@ -752,8 +733,8 @@ export default function Home() {
 
   useEffect(() => {
     if (!showLlmSettings) return;
-    void loadLlmSettings(llmSettingsScope);
-  }, [showLlmSettings, llmSettingsScope, loadLlmSettings]);
+    void loadLlmSettings();
+  }, [showLlmSettings, loadLlmSettings]);
 
   useEffect(() => {
     if (!selectedConnectionId) {
@@ -1192,16 +1173,18 @@ export default function Home() {
           </div>
         </div>
         <div className="header-actions">
-          <select
-            className="db-select lang-select"
-            value={uiLanguage}
-            onChange={(e) => setUiLanguage(e.target.value as UiLanguage)}
-            aria-label="Language"
-            title="Language"
-          >
-            <option value="en">English</option>
-            <option value="zh">中文</option>
-          </select>
+          {pageView === "home" && (
+            <select
+              className="db-select lang-select"
+              value={uiLanguage}
+              onChange={(e) => setUiLanguage(e.target.value as UiLanguage)}
+              aria-label="Language"
+              title="Language"
+            >
+              <option value="en">English</option>
+              <option value="zh">中文</option>
+            </select>
+          )}
           {pageView === "chat" && (
             <>
               <button className="btn ghost only-mobile" onClick={() => setMobileSidebarOpen((s) => !s)} type="button">
@@ -1754,19 +1737,6 @@ export default function Home() {
               }}
             >
               <label className="conn-field full">
-                <span>{ui.scope}</span>
-                <select
-                  value={llmSettingsScope}
-                  onChange={(e) => setLlmSettingsScope(e.target.value as "datasource" | "conversation")}
-                >
-                  <option value="datasource">{ui.datasourceSettings}</option>
-                  <option value="conversation" disabled={!selectedConversationId}>
-                    {ui.conversationOverride}
-                  </option>
-                </select>
-              </label>
-
-              <label className="conn-field full">
                 <span>{ui.providerMode}</span>
                 <select value={llmProviderMode} onChange={(e) => setLlmProviderMode(e.target.value as LlmProviderMode)}>
                   <option value="openrouter_simple">{ui.openRouterSimple}</option>
@@ -1777,25 +1747,16 @@ export default function Home() {
               {llmProviderMode === "openrouter_simple" ? (
                 <>
                   <label className="conn-field full">
-                    <span>API Key Source</span>
-                    <select value={llmApiKeySource} onChange={(e) => setLlmApiKeySource(e.target.value as ApiKeySource)}>
-                      <option value="manual">Manual API Key</option>
-                      <option value="env" disabled={!openrouterEnvKeyAvailable}>
-                        Use OPENROUTER_API_KEY {openrouterEnvKeyAvailable ? "(available)" : "(not set)"}
-                      </option>
-                    </select>
+                    <span>{ui.apiKey}</span>
+                    <input
+                      value={llmApiKey}
+                      onChange={(e) => setLlmApiKey(e.target.value)}
+                      placeholder={openrouterEnvKeyAvailable ? "Optional (leave empty to use OPENROUTER_API_KEY)" : "sk-..."}
+                    />
+                    {openrouterEnvKeyAvailable && (
+                      <em className="action-model-hint">OPENROUTER_API_KEY detected. Leave empty to use env key.</em>
+                    )}
                   </label>
-                  {llmApiKeySource === "manual" && (
-                    <label className="conn-field full">
-                      <span>{ui.apiKey}</span>
-                      <input
-                        value={llmApiKey}
-                        onChange={(e) => setLlmApiKey(e.target.value)}
-                        placeholder="sk-..."
-                        required
-                      />
-                    </label>
-                  )}
                 </>
               ) : (
                 <label className="conn-field full">
