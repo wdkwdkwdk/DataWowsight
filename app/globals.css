@@ -204,6 +204,10 @@ body {
   font-size: 13px;
   text-align: left;
   padding: 7px 9px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
 }
 
 .action-popover button:hover {
@@ -222,6 +226,27 @@ body {
   color: #fff;
   font-size: 13px;
   cursor: pointer;
+}
+
+.add-db-icon-btn {
+  background: #f4f1ea;
+  color: #5f5442;
+  border-color: #ddd6ca;
+  width: 40px;
+  min-width: 40px;
+  height: 40px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.add-db-icon-btn:hover {
+  background: #ece6db;
+}
+
+.action-settings-btn svg {
+  flex: 0 0 auto;
 }
 
 .btn:disabled {

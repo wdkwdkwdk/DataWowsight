@@ -18,6 +18,9 @@ export async function GET(req: Request) {
       defaults: runtimeConfig.defaults,
       supportedLanguages: runtimeConfig.supportedLanguages,
       providerModes: runtimeConfig.providerModes,
+      env: {
+        openrouterApiKeyConfigured: Boolean(process.env.OPENROUTER_API_KEY),
+      },
     });
   } catch (error) {
     return serverError(error);
@@ -32,9 +35,12 @@ function maskSecret(value?: string) {
 
 function maskSetting<T extends { apiKey: string } | null>(setting: T): T {
   if (!setting) return setting;
+  const maskedApiKey = (setting as { apiKeySource?: string }).apiKeySource === "env"
+    ? "(from env)"
+    : maskSecret(setting.apiKey);
   return {
     ...setting,
-    apiKey: maskSecret(setting.apiKey),
+    apiKey: maskedApiKey,
   } as T;
 }
 

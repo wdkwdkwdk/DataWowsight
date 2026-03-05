@@ -1,6 +1,7 @@
 export type DbKind = "postgres" | "mysql" | "sqlite";
 export type UiLanguage = "en" | "zh";
 export type LlmProviderMode = "openrouter_simple" | "openai_compatible_custom";
+export type ApiKeySource = "manual" | "env";
 
 export interface DataSourceConfig {
   id: string;
@@ -129,6 +130,7 @@ export interface LlmSetting {
   scopeId: string;
   language: UiLanguage;
   providerMode: LlmProviderMode;
+  apiKeySource: ApiKeySource;
   apiKey: string;
   baseUrl?: string;
   model?: string;
@@ -144,7 +146,8 @@ export interface LlmSetting {
 export interface LlmSettingInput {
   language: UiLanguage;
   providerMode: LlmProviderMode;
-  apiKey: string;
+  apiKeySource?: ApiKeySource;
+  apiKey?: string;
   baseUrl?: string;
   model?: string;
   providerLabel?: string;
@@ -157,6 +160,7 @@ export interface LlmSettingInput {
 export interface ResolvedLlmRuntime {
   language: UiLanguage;
   providerMode: LlmProviderMode;
+  apiKeySource?: ApiKeySource;
   apiKey?: string;
   baseUrl?: string;
   model?: string;

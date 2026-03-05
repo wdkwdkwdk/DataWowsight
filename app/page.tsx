@@ -2,11 +2,11 @@
 
 import dynamic from "next/dynamic";
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Download, FileJson2, FileSpreadsheet, ScrollText, Settings, X } from "lucide-react";
+import { CirclePlus, Download, FileJson2, FileSpreadsheet, ScrollText, Settings, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { getUiText } from "@/lib/i18n/ui";
-import type { LlmProviderMode, UiLanguage } from "@/lib/types";
+import type { ApiKeySource, LlmProviderMode, UiLanguage } from "@/lib/types";
 
 type Connection = {
   id: string;
@@ -86,6 +86,7 @@ type LlmSettingsResponse = {
   effective?: {
     language?: UiLanguage;
     providerMode?: LlmProviderMode;
+    apiKeySource?: ApiKeySource;
     apiKey?: string;
     baseUrl?: string;
     model?: string;
@@ -99,6 +100,7 @@ type LlmSettingsResponse = {
   datasource?: {
     language?: UiLanguage;
     providerMode?: LlmProviderMode;
+    apiKeySource?: ApiKeySource;
     apiKey?: string;
     baseUrl?: string;
     model?: string;
@@ -111,6 +113,7 @@ type LlmSettingsResponse = {
   conversation?: {
     language?: UiLanguage;
     providerMode?: LlmProviderMode;
+    apiKeySource?: ApiKeySource;
     apiKey?: string;
     baseUrl?: string;
     model?: string;
@@ -120,6 +123,9 @@ type LlmSettingsResponse = {
     temperature?: number;
     maxTokens?: number;
   } | null;
+  env?: {
+    openrouterApiKeyConfigured?: boolean;
+  };
 };
 
 type ChatMessage = {
@@ -194,6 +200,7 @@ export default function Home() {
   const [llmSettingsStatus, setLlmSettingsStatus] = useState("");
   const [effectiveLlmSummary, setEffectiveLlmSummary] = useState("");
   const [llmProviderMode, setLlmProviderMode] = useState<LlmProviderMode>("openrouter_simple");
+  const [llmApiKeySource, setLlmApiKeySource] = useState<ApiKeySource>("manual");
   const [llmApiKey, setLlmApiKey] = useState("");
   const [llmBaseUrl, setLlmBaseUrl] = useState("");
   const [llmModel, setLlmModel] = useState("");
@@ -202,6 +209,7 @@ export default function Home() {
   const [llmExtraQueryText, setLlmExtraQueryText] = useState("");
   const [llmTemperature, setLlmTemperature] = useState("");
   const [llmMaxTokens, setLlmMaxTokens] = useState("");
+  const [openrouterEnvKeyAvailable, setOpenrouterEnvKeyAvailable] = useState(false);
   const [showRename, setShowRename] = useState(false);
   const [renameDraft, setRenameDraft] = useState("");
   const [renameBusy, setRenameBusy] = useState(false);
@@ -387,7 +395,7 @@ export default function Home() {
   }, []);
 
   async function createConversation(title?: string, options?: { autoSelect?: boolean; syncList?: boolean }) {
-    if (!selectedConnectionId) throw new Error("请先选择数据库");
+    if (!selectedConnectionId) throw new Error("Please select a database");
     const autoSelect = options?.autoSelect ?? true;
     const syncList = options?.syncList ?? true;
 
@@ -423,7 +431,7 @@ export default function Home() {
   async function handleCreateConversation() {
     if (!selectedConnectionId || creatingConversation) return;
     setCreatingConversation(true);
-    setStatusMessage("正在创建新会话...");
+    setStatusMessage("Creating new conversation...");
     setSelectedConversationId("");
     setMessages([]);
     setRunStatus("");
@@ -432,7 +440,7 @@ export default function Home() {
       await createConversation(undefined, { autoSelect: true, syncList: true });
       setStatusMessage("");
     } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : "创建会话失败");
+      setStatusMessage(error instanceof Error ? error.message : "Failed to create conversation");
     } finally {
       setCreatingConversation(false);
     }
@@ -441,7 +449,7 @@ export default function Home() {
   async function handleCreateDb(e: FormEvent) {
     e.preventDefault();
     setGlobalLoading(true);
-    setDbCreateStatus("正在创建连接并校验权限...");
+    setDbCreateStatus("Creating connection and validating permissions...");
     setDbScanPercent(null);
     setDbScanStage("");
     setStatusMessage("");
@@ -470,12 +478,12 @@ export default function Home() {
       if (!res.ok) throw new Error(data.error || "Create connection failed");
 
       const newConnectionId = data.datasource.id as string;
-      setDbCreateStatus("连接成功，正在自动扫描结构...");
+      setDbCreateStatus("Connection established, scanning schema...");
       const tickScanProgress = () => {
         const progress = estimateScanProgress(Date.now() - scanStartAt);
         setDbScanPercent(progress.percent);
         setDbScanStage(progress.stage);
-        setDbCreateStatus(`正在扫描结构 ${progress.percent}% · ${progress.stage}`);
+        setDbCreateStatus(`Scanning schema ${progress.percent}% · ${progress.stage}`);
       };
       tickScanProgress();
       scanTimer = setInterval(tickScanProgress, 700);
@@ -487,8 +495,8 @@ export default function Home() {
         scanTimer = null;
       }
       setDbScanPercent(100);
-      setDbScanStage("扫描完成");
-      setDbCreateStatus("正在扫描结构 100% · 扫描完成");
+      setDbScanStage("Completed");
+      setDbCreateStatus("Scanning schema 100% · Completed");
       await wait(260);
 
       await loadConnections();
@@ -505,9 +513,9 @@ export default function Home() {
       setDbParamUser("");
       setDbParamPassword("");
       setDbParamSsl(true);
-      setStatusMessage(`数据库已就绪（${data.datasource.name}），扫描到 ${introspectData.tables ?? 0} 张表/视图。`);
+      setStatusMessage(`Database ready (${data.datasource.name}), indexed ${introspectData.tables ?? 0} tables/views.`);
     } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : "创建数据库失败");
+      setStatusMessage(error instanceof Error ? error.message : "Failed to create database");
     } finally {
       if (scanTimer) clearInterval(scanTimer);
       setDbCreateStatus("");
@@ -524,7 +532,7 @@ export default function Home() {
     const scanStartAt = Date.now();
     const tickScanProgress = () => {
       const progress = estimateScanProgress(Date.now() - scanStartAt);
-      setStatusMessage(`正在重建索引 ${progress.percent}% · ${progress.stage}`);
+      setStatusMessage(`Reindexing ${progress.percent}% · ${progress.stage}`);
     };
     tickScanProgress();
     scanTimer = setInterval(tickScanProgress, 700);
@@ -536,9 +544,9 @@ export default function Home() {
         clearInterval(scanTimer);
         scanTimer = null;
       }
-      setStatusMessage(`重索引完成，共同步 ${data.tables ?? 0} 张表/视图。`);
+      setStatusMessage(`Reindex completed, synced ${data.tables ?? 0} tables/views.`);
     } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : "重索引失败");
+      setStatusMessage(error instanceof Error ? error.message : "Reindex failed");
     } finally {
       if (scanTimer) clearInterval(scanTimer);
       setGlobalLoading(false);
@@ -548,7 +556,7 @@ export default function Home() {
   async function loadDatasourceNote(connectionId: string) {
     const res = await fetch(`/api/connections/${connectionId}/note`);
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "加载备注失败");
+    if (!res.ok) throw new Error(data.error || "Failed to load notes");
     const note = String(data.note ?? "");
     setDatasourceNote(note);
     setNoteDraft(note);
@@ -565,11 +573,11 @@ export default function Home() {
         body: JSON.stringify({ note: noteDraft }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "保存备注失败");
+      if (!res.ok) throw new Error(data.error || "Failed to save notes");
       setDatasourceNote(noteDraft.trim());
-      setNoteStatus("已保存");
+      setNoteStatus("Saved");
     } catch (error) {
-      setNoteStatus(error instanceof Error ? error.message : "保存备注失败");
+      setNoteStatus(error instanceof Error ? error.message : "Failed to save notes");
     } finally {
       setNoteBusy(false);
     }
@@ -602,6 +610,7 @@ export default function Home() {
   function applyLlmSettingToForm(setting: LlmSettingsResponse["datasource"] | LlmSettingsResponse["conversation"] | undefined | null) {
     if (!setting) {
       setLlmProviderMode("openrouter_simple");
+      setLlmApiKeySource("manual");
       setLlmApiKey("");
       setLlmBaseUrl("");
       setLlmModel("");
@@ -614,6 +623,7 @@ export default function Home() {
     }
     setUiLanguage(setting.language === "zh" ? "zh" : "en");
     setLlmProviderMode(setting.providerMode ?? "openrouter_simple");
+    setLlmApiKeySource(setting.apiKeySource === "env" ? "env" : "manual");
     setLlmApiKey(setting.apiKey ?? "");
     setLlmBaseUrl(setting.baseUrl ?? "");
     setLlmModel(setting.model ?? "");
@@ -634,7 +644,7 @@ export default function Home() {
       }
       return parsed as Record<string, string>;
     } catch (error) {
-      const message = error instanceof Error ? error.message : ui.invalidJson;
+      const message = error instanceof Error ? error.message : "Invalid JSON";
       throw new Error(`${label}: ${message}`);
     }
   }
@@ -648,7 +658,8 @@ export default function Home() {
       if (selectedConversationId) query.set("conversationId", selectedConversationId);
       const res = await fetch(`/api/settings/llm?${query.toString()}`, { cache: "no-store" });
       const data = (await res.json()) as LlmSettingsResponse & { error?: string };
-      if (!res.ok) throw new Error(data.error || ui.settingsLoadFailed);
+      if (!res.ok) throw new Error(data.error || "Failed to load settings");
+      setOpenrouterEnvKeyAvailable(Boolean(data.env?.openrouterApiKeyConfigured));
 
       const effective = data.effective;
       setUiLanguage(effective?.language === "zh" ? "zh" : "en");
@@ -664,9 +675,9 @@ export default function Home() {
       const targetScope = scopeOverride ?? llmSettingsScope;
       const scoped = targetScope === "conversation" ? data.conversation : data.datasource;
       applyLlmSettingToForm(scoped);
-      setLlmSettingsStatus(ui.settingsLoaded);
+      setLlmSettingsStatus("Settings loaded");
     } catch (error) {
-      setLlmSettingsStatus(error instanceof Error ? error.message : ui.settingsLoadFailed);
+      setLlmSettingsStatus(error instanceof Error ? error.message : "Failed to load settings");
     } finally {
       setLlmSettingsLoading(false);
     }
@@ -693,12 +704,18 @@ export default function Home() {
       const payload: Record<string, unknown> = {
         language: uiLanguage,
         providerMode: llmProviderMode,
+        apiKeySource: llmProviderMode === "openrouter_simple" ? llmApiKeySource : "manual",
         apiKey: llmApiKey.trim(),
       };
-      if (!payload.apiKey) throw new Error(`${ui.apiKey} is required`);
+      if (llmProviderMode === "openrouter_simple" && llmApiKeySource === "env") {
+        if (!openrouterEnvKeyAvailable) throw new Error("OPENROUTER_API_KEY is not configured in environment");
+        payload.apiKey = "";
+      } else if (!payload.apiKey) {
+        throw new Error("API key is required");
+      }
       if (llmProviderMode === "openai_compatible_custom") {
-        if (!llmBaseUrl.trim()) throw new Error(`${ui.baseUrl} is required`);
-        if (!llmModel.trim()) throw new Error(`${ui.model} is required`);
+        if (!llmBaseUrl.trim()) throw new Error("Base URL is required");
+        if (!llmModel.trim()) throw new Error("Model is required");
         payload.baseUrl = llmBaseUrl.trim();
         payload.model = llmModel.trim();
       }
@@ -718,11 +735,11 @@ export default function Home() {
         body: JSON.stringify(payload),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || ui.settingsSaveFailed);
-      setLlmSettingsStatus(ui.settingsSaved);
+      if (!res.ok) throw new Error(data.error || "Failed to save settings");
+      setLlmSettingsStatus("Settings saved");
       await loadLlmSettings(llmSettingsScope);
     } catch (error) {
-      setLlmSettingsStatus(error instanceof Error ? error.message : ui.settingsSaveFailed);
+      setLlmSettingsStatus(error instanceof Error ? error.message : "Failed to save settings");
     } finally {
       setLlmSettingsSaving(false);
     }
@@ -746,11 +763,11 @@ export default function Home() {
         body: JSON.stringify({ reset: true }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || ui.settingsSaveFailed);
-      setLlmSettingsStatus(ui.settingsReset);
+      if (!res.ok) throw new Error(data.error || "Failed to save settings");
+      setLlmSettingsStatus("Override reset");
       await loadLlmSettings(llmSettingsScope);
     } catch (error) {
-      setLlmSettingsStatus(error instanceof Error ? error.message : ui.settingsSaveFailed);
+      setLlmSettingsStatus(error instanceof Error ? error.message : "Failed to save settings");
     } finally {
       setLlmSettingsSaving(false);
     }
@@ -780,12 +797,12 @@ export default function Home() {
         body: JSON.stringify({ name: renameDraft.trim() }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "重命名失败");
+      if (!res.ok) throw new Error(data.error || "Rename failed");
       await loadConnections();
       setShowRename(false);
-      setStatusMessage("数据库名称已更新");
+      setStatusMessage("Database name updated");
     } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : "重命名失败");
+      setStatusMessage(error instanceof Error ? error.message : "Rename failed");
     } finally {
       setRenameBusy(false);
     }
@@ -801,7 +818,7 @@ export default function Home() {
         const deletingId = deleteTarget.id;
         const res = await fetch(`/api/connections/${deletingId}`, { method: "DELETE" });
         const data = await res.json();
-        if (!res.ok) throw new Error(data.error || "删除数据库失败");
+        if (!res.ok) throw new Error(data.error || "Failed to delete database");
 
         const currentConnections = connections.filter((c) => c.id !== deletingId);
         setConnections(currentConnections);
@@ -810,22 +827,22 @@ export default function Home() {
         setMessages([]);
         setConversations([]);
         setPageView("home");
-        setStatusMessage("数据库已删除");
+        setStatusMessage("Database deleted");
       } else {
         sseRef.current?.close();
         const deletingId = deleteTarget.id;
         const res = await fetch(`/api/conversations/${deletingId}`, { method: "DELETE" });
         const data = await res.json();
-        if (!res.ok) throw new Error(data.error || "删除会话失败");
+        if (!res.ok) throw new Error(data.error || "Failed to delete conversation");
         if (selectedConversationId === deletingId) {
           setSelectedConversationId("");
           setMessages([]);
         }
         if (selectedConnectionId) await loadConversations(selectedConnectionId);
-        setStatusMessage("会话已删除");
+        setStatusMessage("Conversation deleted");
       }
     } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : "删除失败");
+      setStatusMessage(error instanceof Error ? error.message : "Delete failed");
     } finally {
       setDeleteBusy(false);
       setDeleteTarget(null);
@@ -836,7 +853,7 @@ export default function Home() {
     e.preventDefault();
     if (!composer.trim()) return;
     if (!selectedConnectionId) {
-      setStatusMessage("请先添加并选择数据库");
+      setStatusMessage("Please select a database");
       return;
     }
 
@@ -861,13 +878,13 @@ export default function Home() {
       role: "assistant",
       content: "",
       metaJson: {
-        live: { currentStatus: "正在思考...", sqlTraces: [], evidence: [] },
+        live: { currentStatus: "Thinking...", sqlTraces: [], evidence: [] },
       },
     };
 
     setMessages((prev) => [...prev, userMsg, assistantMsg]);
     optimisticConversationIdRef.current = conversationId;
-    setRunStatus("正在启动分析...");
+    setRunStatus("Starting analysis...");
 
     const res = await fetch(`/api/conversations/${conversationId}/messages`, {
       method: "POST",
@@ -883,7 +900,7 @@ export default function Home() {
     if (!res.ok) {
       optimisticConversationIdRef.current = null;
       setRunStatus("");
-      setStatusMessage(data.error || "发送失败");
+      setStatusMessage(data.error || "Send failed");
       return;
     }
 
@@ -961,42 +978,42 @@ export default function Home() {
     };
 
     sse.addEventListener("run_started", () => {
-      setRunStatus("运行中");
+      setRunStatus("Running");
     });
 
     sse.addEventListener("planning", (ev) => {
       const data = JSON.parse(ev.data);
-      const detail = String(data?.payload?.title ?? data?.payload?.detail ?? "规划步骤");
+      const detail = String(data?.payload?.title ?? data?.payload?.detail ?? "Planning step");
       setLiveStatus(detail);
-      setRunStatus("正在规划");
+      setRunStatus("Planning");
     });
 
     sse.addEventListener("sql_started", (ev) => {
       const data = JSON.parse(ev.data);
-      const title = String(data?.payload?.title ?? "SQL 执行");
+      const title = String(data?.payload?.title ?? "Executing SQL");
       setLiveStatus(title);
-      setRunStatus("正在执行 SQL");
+      setRunStatus("Executing SQL");
     });
 
     sse.addEventListener("sql_finished", (ev) => {
       const data = JSON.parse(ev.data);
       const trace = (data?.payload?.trace ?? {}) as SqlTrace;
       appendSqlTrace(trace);
-      setLiveStatus(trace.title || "步骤完成");
+      setLiveStatus(trace.title || "Step completed");
     });
 
     sse.addEventListener("sql_blocked", (ev) => {
       const data = JSON.parse(ev.data);
       const trace = (data?.payload?.trace ?? {}) as SqlTrace;
       appendSqlTrace(trace);
-      setLiveStatus(trace.title || "SQL 被拦截");
+      setLiveStatus(trace.title || "SQL blocked");
     });
 
     sse.addEventListener("sql_error", (ev) => {
       const data = JSON.parse(ev.data);
       const trace = (data?.payload?.trace ?? {}) as SqlTrace;
       appendSqlTrace(trace);
-      setLiveStatus(trace.title || "SQL 执行报错");
+      setLiveStatus(trace.title || "SQL error");
     });
 
     sse.addEventListener("evidence", (ev) => {
@@ -1019,7 +1036,7 @@ export default function Home() {
           }),
         );
       }
-      setLiveStatus("分析完成");
+      setLiveStatus("Completed");
       setRunStatus("");
       sse.close();
       optimisticConversationIdRef.current = null;
@@ -1032,7 +1049,7 @@ export default function Home() {
     sse.addEventListener("failed", (ev) => {
       const data = JSON.parse(ev.data);
       setRunStatus("");
-      setLiveStatus(`失败：${String(data?.payload?.error ?? "分析失败")}`);
+      setLiveStatus(`Failed: ${String(data?.payload?.error ?? "Analysis failed")}`);
       sse.close();
       optimisticConversationIdRef.current = null;
       void loadMessages(conversationId, { force: true });
@@ -1047,7 +1064,7 @@ export default function Home() {
 
     sse.onerror = async () => {
       sse.close();
-      setRunStatus("SSE 中断，回退轮询结果...");
+      setRunStatus("SSE disconnected, switching to polling...");
       await pollRunUntilDone(runId, assistantId, conversationId);
     };
   }
@@ -1058,13 +1075,13 @@ export default function Home() {
       const res = await fetch(`/api/analysis/runs/${runId}?resume=1`);
       const data = await res.json();
       if (!res.ok) {
-        setStatusMessage(data.error || "获取运行状态失败");
+        setStatusMessage(data.error || "Failed to fetch run status");
         return;
       }
       const run = data.run;
       const resume = data.resume as { resumed?: boolean; reason?: string } | undefined;
       if (resume?.resumed) {
-        setRunStatus("检测到任务中断，正在继续执行...");
+        setRunStatus("Detected stale run, resuming...");
       }
       if (run.status === "completed") {
         const report = run.result?.report ?? (run.result as Report | undefined);
@@ -1084,12 +1101,12 @@ export default function Home() {
       if (run.status === "failed") {
         optimisticConversationIdRef.current = null;
         setRunStatus("");
-        setStatusMessage(run.result?.error || "分析失败");
+        setStatusMessage(run.result?.error || "Analysis failed");
         return;
       }
     }
     setRunStatus("");
-    setStatusMessage("运行超时，请重试");
+    setStatusMessage("Run timed out, please retry.");
   }
 
   const currentMessages = messages;
@@ -1120,7 +1137,7 @@ export default function Home() {
       <div className="claude-shell">
         <main className="home-main auth-gate-shell">
           <div className="auth-card">
-            <h2>加载中...</h2>
+            <h2>Loading...</h2>
           </div>
         </main>
       </div>
@@ -1133,7 +1150,7 @@ export default function Home() {
         <main className="home-main auth-gate-shell">
           <div className="auth-card">
             <h2>Enter Password</h2>
-            <p>此页面已启用访问密码，请先验证。</p>
+            <p>This page is password-protected. Please authenticate first.</p>
             <form
               className="auth-form"
               onSubmit={(e) => {
@@ -1147,7 +1164,7 @@ export default function Home() {
                   });
                   const data = await res.json();
                   if (!res.ok) {
-                    setAuthError(data.error || "验证失败");
+                    setAuthError(data.error || "Authentication failed");
                     return;
                   }
                   setAccessPassword("");
@@ -1202,7 +1219,7 @@ export default function Home() {
           {pageView === "chat" && (
             <>
               <button className="btn ghost only-mobile" onClick={() => setMobileSidebarOpen((s) => !s)} type="button">
-                会话
+                Conversations
               </button>
               <select
                 className="db-select"
@@ -1216,7 +1233,7 @@ export default function Home() {
                   openConnection(e.target.value);
                 }}
               >
-                <option value="">选择数据库</option>
+                <option value="">{ui.selectDatabase}</option>
                 {connections.map((c) => (
                   <option key={c.id} value={c.id}>
                     {c.name} ({c.kind})
@@ -1233,7 +1250,7 @@ export default function Home() {
                 type="button"
                 disabled={!selectedConnectionId}
               >
-                Notes
+                {ui.notes}
               </button>
               <div
                 className="action-menu"
@@ -1264,7 +1281,7 @@ export default function Home() {
                         ))}
                       </select>
                       {llmConfig?.defaultModel && (
-                        <div className="action-model-hint">默认: {llmConfig.defaultModel}</div>
+                        <div className="action-model-hint">Default: {llmConfig.defaultModel}</div>
                       )}
                       {effectiveLlmSummary && (
                         <div className="action-model-hint">{effectiveLlmSummary}</div>
@@ -1272,12 +1289,13 @@ export default function Home() {
                     </div>
                     <button
                       type="button"
+                      className="action-settings-btn"
                       onClick={() => {
                         void handleOpenLlmSettings();
                       }}
                     >
-                      <Settings size={14} style={{ marginRight: 6, verticalAlign: "text-bottom" }} />
-                      {ui.settings}
+                      <Settings size={14} />
+                      <span>{ui.settings}</span>
                     </button>
                     <button
                       type="button"
@@ -1326,8 +1344,8 @@ export default function Home() {
                 <option value="en">English</option>
                 <option value="zh">中文</option>
               </select>
-              <button className="btn" onClick={() => setShowAddDb(true)} type="button">
-                + Add Database
+              <button className="btn add-db-icon-btn" onClick={() => setShowAddDb(true)} type="button" title={ui.addDatabase} aria-label={ui.addDatabase}>
+                <CirclePlus size={16} />
               </button>
             </>
           )}
@@ -1359,10 +1377,10 @@ export default function Home() {
             ))}
             {!connectionsLoading && connections.length === 0 && (
               <div className="home-empty">
-                <h2>还没有数据库连接</h2>
-                <p>先在首页添加数据库，然后进入对话模式。</p>
+                <h2>{ui.noDatabaseTitle}</h2>
+                <p>{ui.noDatabaseDesc}</p>
                 <button className="btn" onClick={() => setShowAddDb(true)} type="button">
-                  + Add Database
+                  {ui.addDatabase}
                 </button>
               </div>
             )}
@@ -1372,7 +1390,7 @@ export default function Home() {
       <main className="claude-main">
           <aside className={`claude-sidebar ${mobileSidebarOpen ? "open" : ""}`}>
             <div className="sidebar-top">
-              <h3>Conversations</h3>
+              <h3>{ui.conversations}</h3>
               <button
                 className="btn ghost"
                 onClick={() => {
@@ -1381,13 +1399,13 @@ export default function Home() {
                 type="button"
                 disabled={!selectedConnectionId || creatingConversation}
               >
-                {creatingConversation ? "Creating..." : "New"}
+                {creatingConversation ? ui.creating : ui.newConversation}
               </button>
             </div>
             {creatingConversation && (
               <div className="sidebar-loading">
                 <span className="live-dot" />
-                <span>Creating conversation...</span>
+                <span>{ui.creatingConversation}</span>
               </div>
             )}
             <div className="conv-list">
@@ -1425,7 +1443,7 @@ export default function Home() {
                   </button>
                 </div>
               ))}
-              {conversations.length === 0 && <div className="empty">当前数据库暂无会话</div>}
+              {conversations.length === 0 && <div className="empty">{ui.emptyConversations}</div>}
             </div>
           </aside>
 
@@ -1433,21 +1451,21 @@ export default function Home() {
           <div className="chat-scroll" ref={listRef}>
             {currentMessages.length === 0 && (
               <div className="welcome">
-                <h2>开始一个数据库对话</h2>
-                <p>输入业务问题，Agent 会实时展示规划、执行 SQL 和分析结果。</p>
+                <h2>{ui.welcomeTitle}</h2>
+                <p>{ui.welcomeDesc}</p>
               </div>
             )}
 
             {currentMessages.map((m) => (
               <article key={m.id} className={`msg ${m.role}`}>
                 <div className="msg-role-row">
-                  <div className="msg-role">{m.role === "user" ? "You" : "Agent"}</div>
+                  <div className="msg-role">{m.role === "user" ? ui.you : ui.agent}</div>
                   {m.role === "assistant" && (m.metaJson?.report?.debugLogs?.length ?? 0) > 0 && (
                     <button
                       className="msg-log-btn"
                       type="button"
                       aria-label="Open run logs"
-                      title="查看运行日志"
+                      title="View run logs"
                       onClick={() => setLogViewer({ messageId: m.id, logs: m.metaJson?.report?.debugLogs ?? [] })}
                     >
                       <ScrollText size={13} />
@@ -1463,7 +1481,7 @@ export default function Home() {
                     ) : (
                       <p className="msg-text">{m.content}</p>
                     )
-                  ) : <p className="msg-text muted">正在思考...</p>}
+                  ) : <p className="msg-text muted">Thinking...</p>}
 
                   {m.metaJson?.live && (
                     <div className="live-block">
@@ -1475,7 +1493,7 @@ export default function Home() {
                       {m.metaJson.live.sqlTraces.length > 0 && (
                         <details className="sql-details">
                           <summary>
-                            SQL Runs ({m.metaJson.live.sqlTraces.length})
+                            {ui.sqlRuns} ({m.metaJson.live.sqlTraces.length})
                           </summary>
                           <div className="sql-list">
                             {m.metaJson.live.sqlTraces.map((s, i) => (
@@ -1508,7 +1526,7 @@ export default function Home() {
                       {m.metaJson.report.resultTable && m.metaJson.report.resultTable.rows.length > 0 && (
                         <details className="sql-details" open>
                           <summary>
-                            Result Rows ({m.metaJson.report.resultTable.rows.length})
+                            {ui.resultRows} ({m.metaJson.report.resultTable.rows.length})
                           </summary>
                           <div className="result-actions">
                             <div className="export-menu">
@@ -1578,7 +1596,7 @@ export default function Home() {
                       )}
                       <details className="sql-details">
                         <summary>
-                          Key Evidence ({m.metaJson.report.keyEvidence.length})
+                          {ui.keyEvidence} ({m.metaJson.report.keyEvidence.length})
                         </summary>
                         <ul>
                           {m.metaJson.report.keyEvidence.map((evi, i) => (
@@ -1592,7 +1610,7 @@ export default function Home() {
                       {m.metaJson.report.sqlTraces.length > 0 && (
                         <details className="sql-details">
                           <summary>
-                            SQL Runs ({m.metaJson.report.sqlTraces.length})
+                            {ui.sqlRuns} ({m.metaJson.report.sqlTraces.length})
                           </summary>
                           <div className="sql-list">
                             {m.metaJson.report.sqlTraces.map((s, i) => (
@@ -1622,12 +1640,12 @@ export default function Home() {
               <textarea
                 value={composer}
                 onChange={(e) => setComposer(e.target.value)}
-                placeholder="向数据库提问..."
+                placeholder={ui.askPlaceholder}
                 rows={2}
                 disabled={globalLoading || !selectedConnectionId}
               />
               <button className="btn" type="submit" disabled={globalLoading || !selectedConnectionId || !composer.trim()}>
-                Send
+                {ui.send}
               </button>
             </form>
           </div>
@@ -1638,12 +1656,12 @@ export default function Home() {
       {showAddDb && (
         <div className="modal-mask" onClick={() => setShowAddDb(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h3>Add Database</h3>
+            <h3>{ui.addDatabase}</h3>
             <form className="modal-form" onSubmit={handleCreateDb}>
               <input
                 value={dbName}
                 onChange={(e) => setDbName(e.target.value)}
-                placeholder="连接名称"
+                placeholder="Connection name"
                 required
               />
               <div className="conn-mode-tabs">
@@ -1659,7 +1677,7 @@ export default function Home() {
                   className={`conn-mode-tab ${dbConnMode === "params" ? "active" : ""}`}
                   onClick={() => setDbConnMode("params")}
                 >
-                  参数
+                  Params
                 </button>
               </div>
               {dbConnMode === "url" ? (
@@ -1673,14 +1691,14 @@ export default function Home() {
               ) : (
                 <div className="conn-param-grid">
                   <label className="conn-field full">
-                    <span>数据库类型</span>
+                    <span>Database type</span>
                     <select value={dbParamKind} onChange={(e) => setDbParamKind(e.target.value as "postgres" | "mysql")}>
                       <option value="postgres">PostgreSQL</option>
                       <option value="mysql">MySQL</option>
                     </select>
                   </label>
                   <label className="conn-field">
-                    <span>端点（URL）</span>
+                    <span>Host</span>
                     <input
                       value={dbParamHost}
                       onChange={(e) => setDbParamHost(e.target.value)}
@@ -1689,7 +1707,7 @@ export default function Home() {
                     />
                   </label>
                   <label className="conn-field">
-                    <span>端口</span>
+                    <span>Port</span>
                     <input
                       value={dbParamPort}
                       onChange={(e) => setDbParamPort(e.target.value)}
@@ -1699,7 +1717,7 @@ export default function Home() {
                     />
                   </label>
                   <label className="conn-field">
-                    <span>数据库</span>
+                    <span>Database</span>
                     <input
                       value={dbParamDatabase}
                       onChange={(e) => setDbParamDatabase(e.target.value)}
@@ -1708,7 +1726,7 @@ export default function Home() {
                     />
                   </label>
                   <label className="conn-field">
-                    <span>用户名</span>
+                    <span>Username</span>
                     <input
                       value={dbParamUser}
                       onChange={(e) => setDbParamUser(e.target.value)}
@@ -1717,7 +1735,7 @@ export default function Home() {
                     />
                   </label>
                   <label className="conn-field full">
-                    <span>密码</span>
+                    <span>Password</span>
                     <input
                       type="password"
                       value={dbParamPassword}
@@ -1728,7 +1746,7 @@ export default function Home() {
                   <label className="conn-field full conn-toggle">
                     <span className="conn-toggle-label">
                       <strong>SSL</strong>
-                      <em>{dbParamSsl ? "已启用加密连接" : "未启用加密连接"}</em>
+                      <em>{dbParamSsl ? "Encrypted connection enabled" : "Encrypted connection disabled"}</em>
                     </span>
                     <button
                       type="button"
@@ -1746,7 +1764,7 @@ export default function Home() {
               {dbScanPercent !== null && (
                 <div className="scan-progress" aria-live="polite">
                   <div className="scan-progress-head">
-                    <span>{dbScanStage || "正在扫描结构"}</span>
+                    <span>{dbScanStage || "Scanning schema"}</span>
                     <span>{dbScanPercent}%</span>
                   </div>
                   <div className="scan-progress-track">
@@ -1756,10 +1774,10 @@ export default function Home() {
               )}
               <div className="modal-actions">
                 <button className="btn ghost" onClick={() => setShowAddDb(false)} type="button">
-                  Cancel
+                  {ui.cancel}
                 </button>
                 <button className="btn" type="submit" disabled={globalLoading}>
-                  Save
+                  {ui.saveBtn}
                 </button>
               </div>
             </form>
@@ -1806,15 +1824,40 @@ export default function Home() {
                 </select>
               </label>
 
-              <label className="conn-field full">
-                <span>{ui.apiKey}</span>
-                <input
-                  value={llmApiKey}
-                  onChange={(e) => setLlmApiKey(e.target.value)}
-                  placeholder="sk-..."
-                  required
-                />
-              </label>
+              {llmProviderMode === "openrouter_simple" ? (
+                <>
+                  <label className="conn-field full">
+                    <span>API Key Source</span>
+                    <select value={llmApiKeySource} onChange={(e) => setLlmApiKeySource(e.target.value as ApiKeySource)}>
+                      <option value="manual">Manual API Key</option>
+                      <option value="env" disabled={!openrouterEnvKeyAvailable}>
+                        Use OPENROUTER_API_KEY {openrouterEnvKeyAvailable ? "(available)" : "(not set)"}
+                      </option>
+                    </select>
+                  </label>
+                  {llmApiKeySource === "manual" && (
+                    <label className="conn-field full">
+                      <span>{ui.apiKey}</span>
+                      <input
+                        value={llmApiKey}
+                        onChange={(e) => setLlmApiKey(e.target.value)}
+                        placeholder="sk-..."
+                        required
+                      />
+                    </label>
+                  )}
+                </>
+              ) : (
+                <label className="conn-field full">
+                  <span>{ui.apiKey}</span>
+                  <input
+                    value={llmApiKey}
+                    onChange={(e) => setLlmApiKey(e.target.value)}
+                    placeholder="sk-..."
+                    required
+                  />
+                </label>
+              )}
 
               {llmProviderMode === "openai_compatible_custom" && (
                 <>
@@ -1896,7 +1939,7 @@ export default function Home() {
         <div className="modal-mask" onClick={() => setLogViewer(null)}>
           <div className="modal log-modal" onClick={(e) => e.stopPropagation()}>
             <div className="log-modal-head">
-              <h3>Run Logs</h3>
+              <h3>{ui.runLogs}</h3>
               <button className="log-close-btn" type="button" onClick={() => setLogViewer(null)} aria-label="Close logs">
                 <X size={14} />
               </button>
@@ -1914,7 +1957,7 @@ export default function Home() {
                     {log.payload && <pre className="log-payload">{log.payload}</pre>}
                   </div>
                 ))}
-                {logViewer.logs.length === 0 && <div className="empty">暂无日志</div>}
+                {logViewer.logs.length === 0 && <div className="empty">{ui.noLogs}</div>}
               </div>
             </div>
           </div>
@@ -1923,7 +1966,7 @@ export default function Home() {
       {showNotes && (
         <div className="modal-mask" onClick={() => setShowNotes(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h3>Database Notes</h3>
+            <h3>{ui.databaseNotes}</h3>
             <form
               className="modal-form"
               onSubmit={(e) => {
@@ -1934,16 +1977,16 @@ export default function Home() {
               <textarea
                 value={noteDraft}
                 onChange={(e) => setNoteDraft(e.target.value)}
-                placeholder="写下这个数据库的业务口径、术语定义、重要约束。会自动带入每次对话。"
+                placeholder="Write business definitions, terms, and key constraints for this datasource."
                 rows={8}
               />
               {noteStatus && <div className="status-msg">{noteStatus}</div>}
               <div className="modal-actions">
                 <button className="btn ghost" onClick={() => setShowNotes(false)} type="button">
-                  Close
+                  {ui.closeBtn}
                 </button>
                 <button className="btn" type="submit" disabled={noteBusy || !selectedConnectionId}>
-                  Save
+                  {ui.saveBtn}
                 </button>
               </div>
             </form>
@@ -1964,16 +2007,16 @@ export default function Home() {
               <input
                 value={renameDraft}
                 onChange={(e) => setRenameDraft(e.target.value)}
-                placeholder="数据库名称"
+                placeholder="Database name"
                 maxLength={120}
                 required
               />
               <div className="modal-actions">
                 <button className="btn ghost" onClick={() => setShowRename(false)} type="button" disabled={renameBusy}>
-                  Cancel
+                  {ui.cancel}
                 </button>
                 <button className="btn" type="submit" disabled={renameBusy || !renameDraft.trim()}>
-                  {renameBusy ? "Saving..." : "Save"}
+                  {renameBusy ? ui.saving : ui.saveBtn}
                 </button>
               </div>
             </form>
@@ -1986,12 +2029,12 @@ export default function Home() {
             <h3>{deleteTarget.type === "connection" ? "Delete Database" : "Delete Conversation"}</h3>
             <p className="delete-tip">
               {deleteTarget.type === "connection"
-                ? `删除数据库「${deleteTarget.name}」会同时删除该库下的会话、消息、索引与运行记录。`
-                : `删除会话「${deleteTarget.name}」会移除该会话下所有消息与运行轨迹。`}
+                ? `Deleting database "${deleteTarget.name}" will also remove all conversations, messages, indexes, and run records under it.`
+                : `Deleting conversation "${deleteTarget.name}" will remove all messages and run traces in it.`}
             </p>
             <div className="modal-actions">
               <button className="btn ghost" onClick={() => setDeleteTarget(null)} type="button" disabled={deleteBusy}>
-                Cancel
+                {ui.cancel}
               </button>
               <button className="btn danger" onClick={() => void handleDeleteConfirmed()} type="button" disabled={deleteBusy}>
                 {deleteBusy ? "Deleting..." : "Delete"}
@@ -2016,11 +2059,11 @@ function wait(ms: number) {
 
 function estimateScanProgress(elapsedMs: number) {
   const stages = [
-    "连接元数据服务",
-    "拉取表/视图清单",
-    "读取字段定义",
-    "收集主外键关系",
-    "写入本地索引",
+    "Connecting metadata service",
+    "Fetching table/view list",
+    "Reading column definitions",
+    "Collecting key relationships",
+    "Writing local index",
   ] as const;
   const clamped = Math.max(0, elapsedMs);
   const percent = Math.min(94, Math.max(3, Math.round((clamped / 45000) * 94)));
@@ -2067,7 +2110,7 @@ function buildConnectionUri(input: {
 }) {
   if (input.mode === "url") {
     const uri = input.uri.trim();
-    if (!uri) throw new Error("请填写连接 URL");
+    if (!uri) throw new Error("Please provide connection URL");
     return uri;
   }
 
@@ -2076,10 +2119,10 @@ function buildConnectionUri(input: {
   const database = input.database.trim();
   const user = input.user.trim();
   if (!host || !port || !database || !user) {
-    throw new Error("请完整填写连接参数");
+    throw new Error("Please fill all required connection parameters");
   }
   if (!/^\d+$/.test(port)) {
-    throw new Error("端口必须是数字");
+    throw new Error("Port must be numeric");
   }
 
   const protocol = input.kind === "postgres" ? "postgres" : "mysql";

@@ -165,6 +165,7 @@ async function ensureSchema() {
           scope_id text not null,
           language text not null default 'en',
           provider_mode text not null,
+          api_key_source text not null default 'manual',
           api_key text not null,
           base_url text,
           model text,
@@ -178,6 +179,7 @@ async function ensureSchema() {
           unique(scope_type, scope_id)
         );
       `;
+      await sql`alter table llm_settings add column if not exists api_key_source text not null default 'manual';`;
     })();
   }
 
@@ -201,6 +203,7 @@ function mapLlmSetting(row: Record<string, unknown>): LlmSetting {
     scopeId: String(row.scope_id),
     language: (row.language as UiLanguage) || "en",
     providerMode: row.provider_mode as LlmSetting["providerMode"],
+    apiKeySource: (row.api_key_source as LlmSetting["apiKeySource"]) || "manual",
     apiKey: String(row.api_key ?? ""),
     baseUrl: row.base_url ? String(row.base_url) : undefined,
     model: row.model ? String(row.model) : undefined,
@@ -265,13 +268,15 @@ export async function upsertLlmSetting(
   await ensureSchema();
   const id = `${scopeType}:${scopeId}`;
   const language = input.language || "en";
+  const apiKeySource = input.providerMode === "openrouter_simple" && input.apiKeySource === "env" ? "env" : "manual";
+  const apiKey = apiKeySource === "env" ? "" : (input.apiKey ?? "");
   await sql`
     insert into llm_settings (
-      id, scope_type, scope_id, language, provider_mode, api_key,
+      id, scope_type, scope_id, language, provider_mode, api_key_source, api_key,
       base_url, model, provider_label, extra_headers_json, extra_query_params_json,
       temperature, max_tokens, created_at, updated_at
     ) values (
-      ${id}, ${scopeType}, ${scopeId}, ${language}, ${input.providerMode}, ${input.apiKey},
+      ${id}, ${scopeType}, ${scopeId}, ${language}, ${input.providerMode}, ${apiKeySource}, ${apiKey},
       ${input.baseUrl ?? null}, ${input.model ?? null}, ${input.providerLabel ?? null},
       ${input.extraHeaders ? JSON.stringify(input.extraHeaders) : null}::jsonb,
       ${input.extraQueryParams ? JSON.stringify(input.extraQueryParams) : null}::jsonb,
@@ -281,6 +286,7 @@ export async function upsertLlmSetting(
     do update set
       language = excluded.language,
       provider_mode = excluded.provider_mode,
+      api_key_source = excluded.api_key_source,
       api_key = excluded.api_key,
       base_url = excluded.base_url,
       model = excluded.model,
@@ -317,11 +323,14 @@ export async function resolveEffectiveLlmSettings(input: {
   const conversation = input.conversationId ? await getLlmSetting("conversation", input.conversationId) : null;
   const selected = conversation ?? datasource;
   if (selected) {
+    const useEnvApiKey = selected.providerMode === "openrouter_simple" && selected.apiKeySource === "env";
+    const resolvedApiKey = useEnvApiKey ? process.env.OPENROUTER_API_KEY : selected.apiKey;
     return {
       effective: {
         language: selected.language,
         providerMode: selected.providerMode,
-        apiKey: selected.apiKey,
+        apiKey: resolvedApiKey,
+        apiKeySource: selected.apiKeySource,
         baseUrl: selected.baseUrl,
         model: selected.model,
         providerLabel: selected.providerLabel,
@@ -349,6 +358,7 @@ function resolveEnvDefaultLlmRuntime(): ResolvedLlmRuntime {
     return {
       language,
       providerMode: "openrouter_simple",
+      apiKeySource: "env",
       apiKey: process.env.OPENROUTER_API_KEY,
       baseUrl: process.env.OPENROUTER_BASE_URL ?? "https://openrouter.ai/api/v1",
       model: process.env.OPENROUTER_MODEL ?? "google/gemini-3-flash-preview",
@@ -359,6 +369,7 @@ function resolveEnvDefaultLlmRuntime(): ResolvedLlmRuntime {
   return {
     language,
     providerMode: "openai_compatible_custom",
+    apiKeySource: "env",
     apiKey: process.env.OPENAI_API_KEY,
     baseUrl: process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1",
     model: process.env.OPENAI_MODEL ?? "gpt-4.1-mini",

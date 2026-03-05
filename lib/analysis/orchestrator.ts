@@ -128,7 +128,7 @@ export async function runAnalysisQuery(input: QueryRequest) {
       phase: "planning",
       step: 1,
       maxSteps: ANALYSIS_DEFAULTS.maxSqlPerRun,
-      detail: "任务已创建，准备开始分析",
+      detail: "Run created, preparing analysis",
     },
   });
 
@@ -279,7 +279,7 @@ async function executeAnalysisInBackground(input: {
         phase: "completed",
         step: report.sqlTraces.length,
         maxSteps: ANALYSIS_DEFAULTS.maxSqlPerRun,
-        detail: "分析完成",
+        detail: "Analysis completed",
       },
       report,
     });
@@ -292,7 +292,7 @@ async function executeAnalysisInBackground(input: {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
-    const failPrefix = input.language === "zh" ? "分析失败：" : "Analysis failed: ";
+    const failPrefix = "Analysis failed: ";
     await createMessage({
       id: randomUUID(),
       conversationId: input.conversationId,
@@ -311,7 +311,7 @@ async function executeAnalysisInBackground(input: {
         phase: "failed",
         step: 0,
         maxSteps: ANALYSIS_DEFAULTS.maxSqlPerRun,
-        detail: "分析失败",
+        detail: "Analysis failed",
       },
       error: message,
     });

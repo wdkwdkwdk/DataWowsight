@@ -74,7 +74,8 @@ const kvObjectSchema = z.record(z.string(), z.string());
 export const llmSettingsPatchSchema = z.object({
   language: languageSchema.default("en"),
   providerMode: providerModeSchema,
-  apiKey: z.string().min(1),
+  apiKeySource: z.enum(["manual", "env"]).optional().default("manual"),
+  apiKey: z.string().optional(),
   baseUrl: z.string().url().optional(),
   model: z.string().min(1).max(200).optional(),
   providerLabel: z.string().min(1).max(120).optional(),
@@ -83,7 +84,13 @@ export const llmSettingsPatchSchema = z.object({
   temperature: z.number().min(0).max(2).optional(),
   maxTokens: z.number().int().min(1).max(32000).optional(),
 }).superRefine((value, ctx) => {
+  if (value.providerMode === "openrouter_simple" && value.apiKeySource !== "env" && !value.apiKey?.trim()) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["apiKey"], message: "apiKey is required for openrouter_simple when apiKeySource=manual" });
+  }
   if (value.providerMode === "openai_compatible_custom") {
+    if (!value.apiKey?.trim()) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["apiKey"], message: "apiKey is required for openai_compatible_custom" });
+    }
     if (!value.baseUrl) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["baseUrl"], message: "baseUrl is required for openai_compatible_custom" });
     }
