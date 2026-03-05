@@ -1585,7 +1585,7 @@ export default function Home() {
                 rows={2}
                 disabled={globalLoading || !selectedConnectionId}
               />
-              <button className="btn" type="submit" disabled={globalLoading || !selectedConnectionId || !composer.trim()}>
+              <button className="btn send-btn" type="submit" disabled={globalLoading || !selectedConnectionId || !composer.trim()}>
                 {ui.send}
               </button>
             </form>

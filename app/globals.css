@@ -277,6 +277,16 @@ body {
   border-color: #f0c8c0;
 }
 
+.send-btn {
+  background: #e8e1d4;
+  color: #4f4537;
+  border-color: #d7cebf;
+}
+
+.send-btn:hover:not(:disabled) {
+  background: #ddd3c3;
+}
+
 .only-mobile {
   display: none;
 }
