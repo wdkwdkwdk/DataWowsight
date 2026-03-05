@@ -30,9 +30,11 @@ import {
   buildChartPlannerUserPayload,
   buildPlannerStage1RetryContext,
   buildPlannerStage1SystemPrompt,
+  buildPlannerTimeoutSystemPrompt,
   buildPlannerStage1UserContext,
   buildSqlWriterRetryContext,
   buildSqlWriterSystemPrompt,
+  buildSqlWriterTimeoutSystemPrompt,
   buildSqlWriterUserContext,
   buildSummarySystemPrompt,
   buildSummaryUserPayload,
@@ -398,6 +400,7 @@ async function executeAnalysis(input: {
         dbKind: input.dbKind,
         llmModel: input.llmModel,
         forceLightweightMode,
+        lastTimeoutSql: getLastTimeoutSql(traces),
         entities: readyEntities,
         traces,
         evidence,
@@ -557,7 +560,7 @@ async function executeAnalysis(input: {
         continue;
       }
 
-      const strategyBlockReason = getSqlStrategyBlockReason(safety.normalizedSql, input.dbKind, forceLightweightMode);
+      const strategyBlockReason = getSqlStrategyBlockReason(safety.normalizedSql, input.dbKind);
       if (strategyBlockReason) {
         const item: AnalysisPlanStep = {
           id: randomUUID(),
@@ -728,6 +731,7 @@ async function planNextAction(input: {
   dbKind: DbKind;
   llmModel?: string;
   forceLightweightMode?: boolean;
+  lastTimeoutSql?: string;
   entities: Array<{ tableName: string; columns: Array<{ name: string; dataType: string }> }>;
   traces: AnalysisPlanStep[];
   evidence: Array<{ label: string; value: string }>;
@@ -737,12 +741,15 @@ async function planNextAction(input: {
   onDebugLog?: (log: Omit<AnalysisDebugLog, "ts">) => void;
 }): Promise<PlannerAction> {
   const allTableNames = input.entities.map((e) => e.tableName).sort((a, b) => a.localeCompare(b));
-  const plannerSystemPrompt = buildPlannerStage1SystemPrompt();
+  const plannerSystemPrompt = input.forceLightweightMode
+    ? buildPlannerTimeoutSystemPrompt()
+    : buildPlannerStage1SystemPrompt();
   const plannerUserContext = buildPlannerStage1UserContext({
     question: input.question,
     dbKind: input.dbKind,
     stepIndex: input.stepIndex,
     forceLightweightMode: input.forceLightweightMode,
+    lastTimeoutSql: input.lastTimeoutSql,
     datasourceNote: input.datasourceNote,
     history: input.history,
     allTableNames,
@@ -810,6 +817,7 @@ async function planNextAction(input: {
           dbKind: input.dbKind,
           llmModel: input.llmModel,
           forceLightweightMode: input.forceLightweightMode,
+          lastTimeoutSql: input.lastTimeoutSql,
           stepIndex: input.stepIndex,
           datasourceNote: input.datasourceNote,
           history: input.history,
@@ -843,6 +851,7 @@ async function generateSqlFromSelectedTables(input: {
   dbKind: DbKind;
   llmModel?: string;
   forceLightweightMode?: boolean;
+  lastTimeoutSql?: string;
   stepIndex: number;
   datasourceNote: string;
   history: Array<{ role: "user" | "assistant"; content: string }>;
@@ -853,12 +862,15 @@ async function generateSqlFromSelectedTables(input: {
   seedRationale: string;
   onDebugLog?: (log: Omit<AnalysisDebugLog, "ts">) => void;
 }): Promise<PlannerAction> {
-  const sqlWriterSystemPrompt = buildSqlWriterSystemPrompt();
+  const sqlWriterSystemPrompt = input.forceLightweightMode
+    ? buildSqlWriterTimeoutSystemPrompt()
+    : buildSqlWriterSystemPrompt();
   const sqlWriterUserContext = buildSqlWriterUserContext({
     question: input.question,
     dbKind: input.dbKind,
     stepIndex: input.stepIndex,
     forceLightweightMode: input.forceLightweightMode,
+    lastTimeoutSql: input.lastTimeoutSql,
     datasourceNote: input.datasourceNote,
     history: input.history,
     selectedSchema: input.selectedSchema,
@@ -1555,7 +1567,7 @@ function isNoteInstructionQuestion(question: string) {
   return /备注|记住|记下来|保存|设为|以后|后续|不要用|别用|排除|无关/.test(q);
 }
 
-function getSqlStrategyBlockReason(sql: string, dbKind: DbKind, forceLightweightMode: boolean) {
+function getSqlStrategyBlockReason(sql: string, dbKind: DbKind) {
   const lower = sql.toLowerCase();
   const joinCount = countMatches(lower, /\bjoin\b/g);
   const limitCount = countMatches(lower, /\blimit\b/g);
@@ -1566,9 +1578,6 @@ function getSqlStrategyBlockReason(sql: string, dbKind: DbKind, forceLightweight
   }
   if (/\bcross\s+join\b/.test(lower)) {
     return "请避免 CROSS JOIN，优先更窄的关联条件。";
-  }
-  if (forceLightweightMode && joinCount > 0) {
-    return "上一条查询已超时，已切换轻量模式：请先查单表并缩小范围，再分步关联。";
   }
   if (joinCount > 2) {
     return "当前策略要求轻量查询，单步 JOIN 不超过 2 个；请拆成多步 SQL。";
@@ -1581,6 +1590,16 @@ function getSqlStrategyBlockReason(sql: string, dbKind: DbKind, forceLightweight
 
 function isTimeoutError(reason: string) {
   return /maximum statement execution time exceeded|statement timeout|query execution was interrupted|query[_\s-]?timeout|canceling statement due to user request|timeout/i.test(reason);
+}
+
+function getLastTimeoutSql(traces: AnalysisPlanStep[]) {
+  for (let i = traces.length - 1; i >= 0; i--) {
+    const t = traces[i];
+    if (t.status === "error" && t.reason && isTimeoutError(t.reason) && t.sql) {
+      return t.sql;
+    }
+  }
+  return undefined;
 }
 
 function buildTimeoutOptimizationHint(

@@ -54,12 +54,22 @@ export function buildPlannerStage1SystemPrompt() {
 - final_answer 要围绕“用户真正想知道什么”组织，而非仅罗列数据。
 - 如果用户要求图表，或你认为结果适合用图表展示，则show_chart应为true
 - 结论需有证据支撑（数字/比例/趋势/对比）。
-- 可给出潜在业务解释与下一步建议，但不得编造数据。
+- 可给出潜在业务解释与下一步建议，但不得编造数据。`;
+}
 
-【超时专用策略（关键）】
-- 若用户上下文出现“轻量模式标记：ON”，表示上一条 SQL 已超时。
-- 此时必须优先输出 run_sql（不要急于 final_answer），并选择最小必要表集合。
-- 规划目标必须改为“先缩小数据范围再聚合”，避免重复之前的重查询思路。`;
+export function buildPlannerTimeoutSystemPrompt() {
+  return `你是只读 SQL 分析代理（阶段1：超时恢复专用）。上一条 SQL 已超时，你必须为“下一条更轻量 SQL”做选表决策。
+
+【硬性输出格式】
+- 你必须且只能输出一个合法 JSON 对象。
+- 不允许输出任何额外文字、markdown、代码块、注释。
+- 只允许输出 run_sql 动作，格式为：
+{"action":"run_sql","title":"short_english_title","rationale":"one-sentence why this SQL is lighter","tables":["table_a","table_b"]}
+
+【目标方向】
+- 以“简化 SQL、降低单次查询成本”为第一目标。
+- 允许把问题拆成多次查询逐步完成；宁愿多查几次轻量 SQL，也不要单条重查询。
+- 避免重复上一条超时 SQL 的思路。`;
 }
 
 export function buildPlannerStage1UserContext(input: {
@@ -67,6 +77,7 @@ export function buildPlannerStage1UserContext(input: {
   dbKind: DbKind;
   stepIndex: number;
   forceLightweightMode?: boolean;
+  lastTimeoutSql?: string;
   datasourceNote: string;
   history: HistoryItem[];
   allTableNames: string[];
@@ -79,6 +90,7 @@ export function buildPlannerStage1UserContext(input: {
 数据库方言：${input.dbKind}
 当前步数：${input.stepIndex + 1}
 轻量模式标记：${input.forceLightweightMode ? "ON" : "OFF"}
+上一条超时SQL：${input.lastTimeoutSql || "（无）"}
 数据库备注：${input.datasourceNote || "（空）"}
 当前数据库原始备注全文（编辑 add_note 时必须基于此内容改写并输出完整新版本）：${input.datasourceNote || "（空）"}
 历史消息：${JSON.stringify(input.history)}
@@ -117,12 +129,22 @@ export function buildSqlWriterSystemPrompt() {
 - 默认控制结果规模（建议 LIMIT <= 1000）。
 - 性能优先：宁愿多查几次轻量 SQL，也不要一条超重 SQL；JOIN 建议不超过 2 个。
 - MySQL 特别规则：避免 UNION + 多分支 LIMIT 这类写法；如需多结果，拆成多步查询。
-- 若上一步报错包含 unknown column/column does not exist/no such column，必须修正列名后再继续。
+- 若上一步报错包含 unknown column/column does not exist/no such column，必须修正列名后再继续。`;
+}
 
-【SQL 超时专用策略（关键）】
-- 若用户上下文出现“轻量模式标记：ON”，说明上一条 SQL 超时，必须显著降低复杂度。
-- 禁止仅做语法等价改写（如 COALESCE/IFNULL 互换）后重试同构 SQL。
-- 必须改变执行策略：先缩范围再聚合，优先利用时间/状态过滤，必要时分步查询。`;
+export function buildSqlWriterTimeoutSystemPrompt() {
+  return `你是只读 SQL 分析代理（阶段2：SQL超时恢复专用）。上一条 SQL 已超时，请只输出一个新的更轻量 run_sql JSON。
+
+【硬性输出格式】
+- 你必须且只能输出一个合法 JSON 对象。
+- 只允许输出：{"action":"run_sql","title":"...","rationale":"...","sql":"..."}
+- 不允许任何额外文字、markdown、代码块、注释。
+
+【目标方向】
+- 必须避免与上一条超时 SQL 同构（例如仅函数替换、别名替换）。
+- 优先简化 SQL：降低单次查询复杂度与扫描成本。
+- 允许把问题拆成多步，逐步查询并利用已有证据推进结论。
+- 禁止多语句；仅允许单条 SELECT（或单条 WITH...SELECT）。`;
 }
 
 export function buildSqlWriterUserContext(input: {
@@ -130,6 +152,7 @@ export function buildSqlWriterUserContext(input: {
   dbKind: DbKind;
   stepIndex: number;
   forceLightweightMode?: boolean;
+  lastTimeoutSql?: string;
   datasourceNote: string;
   history: HistoryItem[];
   selectedSchema: SimpleSchema;
@@ -143,6 +166,7 @@ export function buildSqlWriterUserContext(input: {
 数据库方言：${input.dbKind}
 当前步数：${input.stepIndex + 1}
 轻量模式标记：${input.forceLightweightMode ? "ON" : "OFF"}
+上一条超时SQL：${input.lastTimeoutSql || "（无）"}
 数据库备注：${input.datasourceNote || "（空）"}
 历史消息：${JSON.stringify(input.history)}
 目标表与字段（仅可使用这些表写 SQL）：${JSON.stringify(input.selectedSchema)}
