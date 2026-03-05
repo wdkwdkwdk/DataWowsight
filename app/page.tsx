@@ -1315,9 +1315,21 @@ export default function Home() {
             </>
           )}
           {pageView === "home" && (
-            <button className="btn" onClick={() => setShowAddDb(true)} type="button">
-              + Add Database
-            </button>
+            <>
+              <select
+                className="db-select"
+                value={uiLanguage}
+                onChange={(e) => setUiLanguage(e.target.value as UiLanguage)}
+                aria-label="Language"
+                title="Language"
+              >
+                <option value="en">English</option>
+                <option value="zh">中文</option>
+              </select>
+              <button className="btn" onClick={() => setShowAddDb(true)} type="button">
+                + Add Database
+              </button>
+            </>
           )}
         </div>
       </header>
