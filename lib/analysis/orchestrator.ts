@@ -371,6 +371,7 @@ async function executeAnalysis(input: {
   const debugLogs: AnalysisDebugLog[] = [];
   const resultSets: Array<{ title: string; sql: string; rows: Array<Record<string, unknown>> }> = [];
   const triedSql = new Set<string>();
+  const timeoutSqlShapes = new Set<string>();
   let duplicateBlockCount = 0;
   let forceLightweightMode = false;
   let noteUpdatedInRun = false;
@@ -527,6 +528,7 @@ async function executeAnalysis(input: {
       }
 
       const dedupeKey = safety.normalizedSql.toLowerCase();
+      const shapeKey = buildSqlShapeFingerprint(safety.normalizedSql);
       if (triedSql.has(dedupeKey)) {
         duplicateBlockCount += 1;
         const item: AnalysisPlanStep = {
@@ -553,6 +555,43 @@ async function executeAnalysis(input: {
           kind: "sql_blocked",
           title: guardedAction.title,
           detail: "Duplicate SQL detected",
+          payload: safety.normalizedSql,
+        });
+        await input.onEvent?.("sql_blocked", stepIndex + 1, { trace: item });
+        await input.onEvent?.("evidence", stepIndex + 1, evidenceItem);
+        continue;
+      }
+      if (forceLightweightMode && timeoutSqlShapes.has(shapeKey)) {
+        const reason = "该 SQL 与此前超时语句同构，已拦截；请改为新的执行策略（分步/降复杂度）。";
+        const item: AnalysisPlanStep = {
+          id: randomUUID(),
+          title: guardedAction.title,
+          sql: safety.normalizedSql,
+          rationale: guardedAction.rationale,
+          status: "blocked",
+          reason,
+          durationMs: 0,
+          rowCount: 0,
+        };
+        traces.push(item);
+        await insertSqlAuditLog({
+          id: randomUUID(),
+          runId: input.runId,
+          sqlText: safety.normalizedSql,
+          durationMs: 0,
+          rowCount: 0,
+          status: "blocked",
+          reason,
+        });
+        const evidenceItem = {
+          label: guardedAction.title,
+          value: reason,
+        };
+        evidence.push(evidenceItem);
+        pushDebugLog({
+          kind: "sql_blocked",
+          title: guardedAction.title,
+          detail: reason,
           payload: safety.normalizedSql,
         });
         await input.onEvent?.("sql_blocked", stepIndex + 1, { trace: item });
@@ -683,6 +722,7 @@ async function executeAnalysis(input: {
         });
         if (isTimeoutError(reason)) {
           forceLightweightMode = true;
+          timeoutSqlShapes.add(shapeKey);
           evidence.push({
             label: `${guardedAction.title}（性能降级提示）`,
             value: "检测到查询超时。后续请避免 JOIN，改为分步小查询（先单表过滤拿主键，再按主键查关联表）。",
@@ -1635,6 +1675,18 @@ function buildTimeoutOptimizationHint(
 function countMatches(text: string, pattern: RegExp) {
   const matches = text.match(pattern);
   return matches ? matches.length : 0;
+}
+
+function buildSqlShapeFingerprint(sql: string) {
+  return sql
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .replace(/\bifnull\s*\(/g, "coalesce(")
+    .replace(/\bas\s+[a-z_][a-z0-9_]*/g, "")
+    .replace(/\blimit\s+\d+\b/g, "limit ?")
+    .replace(/'[^']*'/g, "?")
+    .replace(/\b\d+(\.\d+)?\b/g, "?")
+    .trim();
 }
 
 function buildEvidenceValue(sql: string, rows: Array<Record<string, unknown>>) {
