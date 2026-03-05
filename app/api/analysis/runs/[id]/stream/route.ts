@@ -1,4 +1,5 @@
 import { getRun, listRunEvents } from "@/lib/memory-db";
+import { tryResumeRun } from "@/lib/analysis/orchestrator";
 
 function toSseEvent(eventName: string, data: unknown) {
   return `event: ${eventName}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -20,10 +21,12 @@ export async function GET(_: Request, context: { params: Promise<{ id: string }>
   let lastSendAt = Date.now();
   let polling = false;
   const KEEPALIVE_MS = 5_000;
+  const RESUME_CHECK_MS = 10_000;
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       let lastEventId = 0;
+      let lastResumeCheckAt = 0;
 
       const safeEnqueue = (eventName: string, data: unknown) => {
         if (closed) return false;
@@ -62,6 +65,17 @@ export async function GET(_: Request, context: { params: Promise<{ id: string }>
             if (!safeEnqueue("ping", { ts: new Date().toISOString() })) {
               safeClose();
               return;
+            }
+          }
+
+          if (Date.now() - lastResumeCheckAt >= RESUME_CHECK_MS) {
+            lastResumeCheckAt = Date.now();
+            const resume = await tryResumeRun(runId);
+            if (resume.resumed) {
+              if (!safeEnqueue("resume", { runId, reason: resume.reason })) {
+                safeClose();
+                return;
+              }
             }
           }
 
