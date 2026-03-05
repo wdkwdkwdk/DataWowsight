@@ -54,13 +54,19 @@ export function buildPlannerStage1SystemPrompt() {
 - final_answer 要围绕“用户真正想知道什么”组织，而非仅罗列数据。
 - 如果用户要求图表，或你认为结果适合用图表展示，则show_chart应为true
 - 结论需有证据支撑（数字/比例/趋势/对比）。
-- 可给出潜在业务解释与下一步建议，但不得编造数据。`;
+- 可给出潜在业务解释与下一步建议，但不得编造数据。
+
+【超时专用策略（关键）】
+- 若用户上下文出现“轻量模式标记：ON”，表示上一条 SQL 已超时。
+- 此时必须优先输出 run_sql（不要急于 final_answer），并选择最小必要表集合。
+- 规划目标必须改为“先缩小数据范围再聚合”，避免重复之前的重查询思路。`;
 }
 
 export function buildPlannerStage1UserContext(input: {
   question: string;
   dbKind: DbKind;
   stepIndex: number;
+  forceLightweightMode?: boolean;
   datasourceNote: string;
   history: HistoryItem[];
   allTableNames: string[];
@@ -72,6 +78,7 @@ export function buildPlannerStage1UserContext(input: {
 用户问题：${input.question}
 数据库方言：${input.dbKind}
 当前步数：${input.stepIndex + 1}
+轻量模式标记：${input.forceLightweightMode ? "ON" : "OFF"}
 数据库备注：${input.datasourceNote || "（空）"}
 当前数据库原始备注全文（编辑 add_note 时必须基于此内容改写并输出完整新版本）：${input.datasourceNote || "（空）"}
 历史消息：${JSON.stringify(input.history)}
@@ -110,13 +117,19 @@ export function buildSqlWriterSystemPrompt() {
 - 默认控制结果规模（建议 LIMIT <= 1000）。
 - 性能优先：宁愿多查几次轻量 SQL，也不要一条超重 SQL；JOIN 建议不超过 2 个。
 - MySQL 特别规则：避免 UNION + 多分支 LIMIT 这类写法；如需多结果，拆成多步查询。
-- 若上一步报错包含 unknown column/column does not exist/no such column，必须修正列名后再继续。`;
+- 若上一步报错包含 unknown column/column does not exist/no such column，必须修正列名后再继续。
+
+【SQL 超时专用策略（关键）】
+- 若用户上下文出现“轻量模式标记：ON”，说明上一条 SQL 超时，必须显著降低复杂度。
+- 禁止仅做语法等价改写（如 COALESCE/IFNULL 互换）后重试同构 SQL。
+- 必须改变执行策略：先缩范围再聚合，优先利用时间/状态过滤，必要时分步查询。`;
 }
 
 export function buildSqlWriterUserContext(input: {
   question: string;
   dbKind: DbKind;
   stepIndex: number;
+  forceLightweightMode?: boolean;
   datasourceNote: string;
   history: HistoryItem[];
   selectedSchema: SimpleSchema;
@@ -129,6 +142,7 @@ export function buildSqlWriterUserContext(input: {
 用户问题：${input.question}
 数据库方言：${input.dbKind}
 当前步数：${input.stepIndex + 1}
+轻量模式标记：${input.forceLightweightMode ? "ON" : "OFF"}
 数据库备注：${input.datasourceNote || "（空）"}
 历史消息：${JSON.stringify(input.history)}
 目标表与字段（仅可使用这些表写 SQL）：${JSON.stringify(input.selectedSchema)}

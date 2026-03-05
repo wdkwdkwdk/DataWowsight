@@ -397,6 +397,7 @@ async function executeAnalysis(input: {
         question: input.question,
         dbKind: input.dbKind,
         llmModel: input.llmModel,
+        forceLightweightMode,
         entities: readyEntities,
         traces,
         evidence,
@@ -726,6 +727,7 @@ async function planNextAction(input: {
   question: string;
   dbKind: DbKind;
   llmModel?: string;
+  forceLightweightMode?: boolean;
   entities: Array<{ tableName: string; columns: Array<{ name: string; dataType: string }> }>;
   traces: AnalysisPlanStep[];
   evidence: Array<{ label: string; value: string }>;
@@ -740,6 +742,7 @@ async function planNextAction(input: {
     question: input.question,
     dbKind: input.dbKind,
     stepIndex: input.stepIndex,
+    forceLightweightMode: input.forceLightweightMode,
     datasourceNote: input.datasourceNote,
     history: input.history,
     allTableNames,
@@ -806,6 +809,7 @@ async function planNextAction(input: {
           question: input.question,
           dbKind: input.dbKind,
           llmModel: input.llmModel,
+          forceLightweightMode: input.forceLightweightMode,
           stepIndex: input.stepIndex,
           datasourceNote: input.datasourceNote,
           history: input.history,
@@ -838,6 +842,7 @@ async function generateSqlFromSelectedTables(input: {
   question: string;
   dbKind: DbKind;
   llmModel?: string;
+  forceLightweightMode?: boolean;
   stepIndex: number;
   datasourceNote: string;
   history: Array<{ role: "user" | "assistant"; content: string }>;
@@ -853,6 +858,7 @@ async function generateSqlFromSelectedTables(input: {
     question: input.question,
     dbKind: input.dbKind,
     stepIndex: input.stepIndex,
+    forceLightweightMode: input.forceLightweightMode,
     datasourceNote: input.datasourceNote,
     history: input.history,
     selectedSchema: input.selectedSchema,
