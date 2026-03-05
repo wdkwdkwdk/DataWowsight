@@ -144,7 +144,6 @@ type ChatMessage = {
 
 const ReactECharts = dynamic(() => import("echarts-for-react"), { ssr: false });
 const APP_VERSION = "v1.0.31";
-const MODEL_STORAGE_KEY = "dw:selected-llm-model";
 
 export default function Home() {
   const [mounted, setMounted] = useState(false);
@@ -191,7 +190,6 @@ export default function Home() {
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [showConnectionActions, setShowConnectionActions] = useState(false);
   const [llmConfig, setLlmConfig] = useState<LlmConfig | null>(null);
-  const [selectedLlmModel, setSelectedLlmModel] = useState("");
   const [uiLanguage, setUiLanguage] = useState<UiLanguage>("en");
   const [showLlmSettings, setShowLlmSettings] = useState(false);
   const [llmSettingsScope, setLlmSettingsScope] = useState<"datasource" | "conversation">("datasource");
@@ -228,14 +226,13 @@ export default function Home() {
     () => connections.find((c) => c.id === selectedConnectionId),
     [connections, selectedConnectionId],
   );
-  const llmModelOptions = useMemo(() => {
-    const fromConfig = llmConfig?.selectableModels ?? [];
-    if (fromConfig.length > 0) return fromConfig;
-    if (selectedLlmModel) return [selectedLlmModel];
-    return [];
-  }, [llmConfig, selectedLlmModel]);
   const authReady = !authLoading && (!authEnabled || authenticated);
   const ui = useMemo(() => getUiText(uiLanguage), [uiLanguage]);
+  const openrouterModelOptions = useMemo(() => {
+    const defaults = llmConfig?.defaults?.openrouterSimple?.model ? [llmConfig.defaults.openrouterSimple.model] : [];
+    const configured = llmConfig?.selectableModels ?? [];
+    return [...new Set([...defaults, ...configured].map((m) => m.trim()).filter(Boolean))];
+  }, [llmConfig]);
 
   const loadConnections = useCallback(async () => {
     setConnectionsLoading(true);
@@ -290,11 +287,6 @@ export default function Home() {
     if (!res.ok) throw new Error(data.error || "Load model config failed");
     const options = Array.isArray(data.selectableModels) ? data.selectableModels.filter(Boolean) : [];
     const fallbackModel = data.defaultModel || options[0] || "";
-    const stored = typeof window !== "undefined" ? window.localStorage.getItem(MODEL_STORAGE_KEY)?.trim() : "";
-    const resolved =
-      stored && (options.includes(stored) || stored === fallbackModel)
-        ? stored
-        : fallbackModel;
     setLlmConfig({
       provider: data.provider || "mock",
       defaultModel: fallbackModel,
@@ -304,10 +296,6 @@ export default function Home() {
       defaults: data.defaults,
     });
     setUiLanguage(data.defaultLanguage === "zh" ? "zh" : "en");
-    setSelectedLlmModel(resolved);
-    if (typeof window !== "undefined" && resolved) {
-      window.localStorage.setItem(MODEL_STORAGE_KEY, resolved);
-    }
   }, []);
 
   useEffect(() => {
@@ -598,15 +586,6 @@ export default function Home() {
     setRunStatus("");
   }
 
-  function handleSelectLlmModel(nextModel: string) {
-    const value = nextModel.trim();
-    setSelectedLlmModel(value);
-    if (typeof window !== "undefined") {
-      if (value) window.localStorage.setItem(MODEL_STORAGE_KEY, value);
-      else window.localStorage.removeItem(MODEL_STORAGE_KEY);
-    }
-  }
-
   function applyLlmSettingToForm(setting: LlmSettingsResponse["datasource"] | LlmSettingsResponse["conversation"] | undefined | null) {
     if (!setting) {
       setLlmProviderMode("openrouter_simple");
@@ -621,7 +600,6 @@ export default function Home() {
       setLlmMaxTokens("");
       return;
     }
-    setUiLanguage(setting.language === "zh" ? "zh" : "en");
     setLlmProviderMode(setting.providerMode ?? "openrouter_simple");
     setLlmApiKeySource(setting.apiKeySource === "env" ? "env" : "manual");
     setLlmApiKey(setting.apiKey ?? "");
@@ -662,7 +640,6 @@ export default function Home() {
       setOpenrouterEnvKeyAvailable(Boolean(data.env?.openrouterApiKeyConfigured));
 
       const effective = data.effective;
-      setUiLanguage(effective?.language === "zh" ? "zh" : "en");
       const from = effective?.fromScope === "conversation"
         ? ui.fromConversation
         : effective?.fromScope === "datasource"
@@ -892,7 +869,6 @@ export default function Home() {
       body: JSON.stringify({
         question,
         connectionId: selectedConnectionId,
-        llmModel: selectedLlmModel || undefined,
         language: uiLanguage,
       }),
     });
@@ -1216,6 +1192,16 @@ export default function Home() {
           </div>
         </div>
         <div className="header-actions">
+          <select
+            className="db-select lang-select"
+            value={uiLanguage}
+            onChange={(e) => setUiLanguage(e.target.value as UiLanguage)}
+            aria-label="Language"
+            title="Language"
+          >
+            <option value="en">English</option>
+            <option value="zh">中文</option>
+          </select>
           {pageView === "chat" && (
             <>
               <button className="btn ghost only-mobile" onClick={() => setMobileSidebarOpen((s) => !s)} type="button">
@@ -1266,27 +1252,11 @@ export default function Home() {
                 </button>
                 {showConnectionActions && (
                   <div className="action-popover">
-                    <div className="action-model-picker">
-                      <div className="action-model-label">Model</div>
-                      <select
-                        className="action-model-select"
-                        value={selectedLlmModel}
-                        onChange={(e) => handleSelectLlmModel(e.target.value)}
-                        disabled={llmModelOptions.length === 0}
-                      >
-                        {llmModelOptions.map((model) => (
-                          <option key={model} value={model}>
-                            {model}
-                          </option>
-                        ))}
-                      </select>
-                      {llmConfig?.defaultModel && (
-                        <div className="action-model-hint">Default: {llmConfig.defaultModel}</div>
-                      )}
-                      {effectiveLlmSummary && (
+                    {effectiveLlmSummary && (
+                      <div className="action-model-picker">
                         <div className="action-model-hint">{effectiveLlmSummary}</div>
-                      )}
-                    </div>
+                      </div>
+                    )}
                     <button
                       type="button"
                       className="action-settings-btn"
@@ -1333,21 +1303,9 @@ export default function Home() {
             </>
           )}
           {pageView === "home" && (
-            <>
-              <select
-                className="db-select"
-                value={uiLanguage}
-                onChange={(e) => setUiLanguage(e.target.value as UiLanguage)}
-                aria-label="Language"
-                title="Language"
-              >
-                <option value="en">English</option>
-                <option value="zh">中文</option>
-              </select>
-              <button className="btn add-db-icon-btn" onClick={() => setShowAddDb(true)} type="button" title={ui.addDatabase} aria-label={ui.addDatabase}>
-                <CirclePlus size={16} />
-              </button>
-            </>
+            <button className="btn add-db-icon-btn" onClick={() => setShowAddDb(true)} type="button" title={ui.addDatabase} aria-label={ui.addDatabase}>
+              <CirclePlus size={16} />
+            </button>
           )}
         </div>
       </header>
@@ -1809,14 +1767,6 @@ export default function Home() {
               </label>
 
               <label className="conn-field full">
-                <span>{ui.language}</span>
-                <select value={uiLanguage} onChange={(e) => setUiLanguage(e.target.value as UiLanguage)}>
-                  <option value="en">English</option>
-                  <option value="zh">中文</option>
-                </select>
-              </label>
-
-              <label className="conn-field full">
                 <span>{ui.providerMode}</span>
                 <select value={llmProviderMode} onChange={(e) => setLlmProviderMode(e.target.value as LlmProviderMode)}>
                   <option value="openrouter_simple">{ui.openRouterSimple}</option>
@@ -1875,7 +1825,17 @@ export default function Home() {
               {llmProviderMode === "openrouter_simple" && (
                 <label className="conn-field full">
                   <span>{ui.model}</span>
-                  <input value={llmModel} onChange={(e) => setLlmModel(e.target.value)} placeholder={llmConfig?.defaultModel || ""} />
+                  <input
+                    list="openrouter-model-options"
+                    value={llmModel}
+                    onChange={(e) => setLlmModel(e.target.value)}
+                    placeholder={llmConfig?.defaults?.openrouterSimple?.model || llmConfig?.defaultModel || ""}
+                  />
+                  <datalist id="openrouter-model-options">
+                    {openrouterModelOptions.map((model) => (
+                      <option key={model} value={model} />
+                    ))}
+                  </datalist>
                 </label>
               )}
 

@@ -122,6 +122,11 @@ body {
   font-size: 14px;
 }
 
+.lang-select {
+  width: 120px;
+  min-width: 120px;
+}
+
 .db-badge {
   border: 1px solid var(--border);
   border-radius: 999px;
