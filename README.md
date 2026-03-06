@@ -18,14 +18,10 @@ Unlike many heavy BI/agent stacks, DataWowsight is intentionally lean:
 
 ## Demo
 
-<p align="center">
-  <a href="https://pub-032d3556965b40dd91eeae2971b35392.r2.dev/show_demo_datawowsight_2.mp4">
-    <img src="https://pub-032d3556965b40dd91eeae2971b35392.r2.dev/agents1.png" alt="Watch the DataWowsight demo video" width="900" />
-  </a>
-</p>
+https://github.com/user-attachments/assets/2a13b149-e479-4cbe-a451-89572f4c0f4e
 
 <p align="center">
-  Click the image above to watch the product demo video.
+  <img src="https://pub-032d3556965b40dd91eeae2971b35392.r2.dev/agents1.png" alt="Agent workflow interface" width="900" />
 </p>
 
 <p align="center">
