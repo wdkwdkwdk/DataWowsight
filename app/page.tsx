@@ -1,6 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import Image from "next/image";
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CirclePlus, Download, FileJson2, FileSpreadsheet, ScrollText, Settings, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -1074,7 +1075,12 @@ export default function Home() {
         <header className="claude-header">
           <div className="header-left">
             <div className="breadcrumb">
-              <span className="crumb-brand-link active">DataWowsight</span>
+              <div className="brand-lockup">
+                <span className="brand-mark" aria-hidden="true">
+                  <Image src="/brand/logo.jpg" alt="" width={32} height={32} />
+                </span>
+                <span className="crumb-brand-link active">DataWowsight</span>
+              </div>
             </div>
           </div>
         </header>
@@ -1154,6 +1160,9 @@ export default function Home() {
       <header className="claude-header">
         <div className="header-left">
           <div className="breadcrumb">
+            <span className="brand-mark" aria-hidden="true">
+              <Image src="/brand/logo.jpg" alt="" width={32} height={32} priority />
+            </span>
             <button
               className={`crumb-brand-link ${pageView === "home" ? "active" : ""}`}
               onClick={goHome}

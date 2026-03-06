@@ -1,83 +1,75 @@
 # DataWowsight
 
-DataWowsight is a full-stack natural language SQL analytics app.
+<p align="center">
+  <img src="./logo.jpg" alt="DataWowsight logo" width="180" />
+</p>
 
-It connects to read-only databases, runs iterative LLM-driven analysis, and returns answers with SQL traces, evidence, and optional charts.
+> A lightweight, full-stack analytics agent you can run fast.  
+> One repo, frontend + backend together, deploy directly on Vercel.
 
-## Features
+DataWowsight is an open-source analytics agent that connects to your database, plans analysis steps, executes read-only SQL, and returns evidence-backed answers with traces and charts.
 
-- Multi-database target support
-  - PostgreSQL
-  - MySQL
-  - SQLite (optional runtime dependency)
-- Iterative analysis loop
-  - planner -> SQL writer -> SQL execution -> evidence -> final answer
-- SQL safety guardrails
-  - read-only enforcement
-  - DDL/DML blocking
-  - risky query strategy blocking
+Unlike many heavy BI/agent stacks, DataWowsight is intentionally lean:
+
+- single Next.js codebase (UI + API routes)
+- minimal infra requirements
+- deployable as-is on Vercel
+- fast to fork, run, and customize
+
+## Why DataWowsight
+
+Most chat-to-SQL tools hide execution details. DataWowsight does the opposite:
+
+- transparent run lifecycle (planning -> SQL -> evidence -> answer)
+- SQL trace visibility for every step
+- safety-first execution with guardrails
+- resumable runs with SSE + polling fallback
+- configurable LLM providers for real production use
+
+And it stays lightweight while doing that.
+
+## Feature Highlights
+
+- Read-only analytics agent loop
+  - planner decides next action
+  - SQL writer generates executable query
+  - backend executes and feeds evidence back into the loop
+- Built-in chart support
+  - supports `line`, `bar`, `pie`
+  - chart data is derived from SQL result sets (not fabricated)
+  - can be auto-suggested by the agent when suitable
+- SQL safety layer
+  - blocks DDL/DML and unsafe patterns
+  - strategy checks for costly/risky query shapes
 - Real-time run updates
   - SSE stream with keepalive ping
-  - polling fallback + stale-run resume
-- Timeout-aware execution
-  - SQL timeout
-  - timeout recovery prompts and lightweight retry strategy
-  - duplicate/shape guard to avoid repeating equivalent timed-out SQL
-- Built-in memory/state on Postgres
-  - datasources, schema index, notes
-  - conversations, messages
-  - runs, run events, SQL audit logs
-  - business terms
+  - polling fallback with stale-run resume
+- Timeout-aware recovery
+  - lightweight retry strategy after timeout
+  - duplicate/timeout-shape avoidance
+- Bilingual capability
+  - English / Chinese prompt packs
+  - default language: English
+- Flexible model configuration
+  - OpenRouter simple mode
+  - OpenAI-compatible custom mode
+- Persistent memory on Postgres
+  - datasources, schema cache, conversations, messages
+  - run events, SQL audit logs, knowledge terms
 
-## Bilingual + Model Settings (Implemented)
+## Architecture (Current)
 
-### Language
+```text
+Client UI (Next.js)
+  -> API Routes
+    -> Analysis Orchestrator
+      -> LLM Provider Adapter
+      -> Target DB Connector (pg/mysql/sqlite)
+      -> SQL Safety Guard
+    -> Memory DB (Postgres)
+```
 
-- App supports `en` and `zh`.
-- Default language is **English**.
-- Language affects:
-  - UI settings text (settings modal)
-  - analysis prompts (planner/sql-writer/summary/chart)
-  - default LLM answer style
-
-### Scoped LLM settings
-
-Settings are persisted per scope with deterministic precedence:
-
-1. conversation scope
-2. datasource scope
-3. environment defaults
-
-### Provider modes
-
-- `openrouter_simple`
-  - user inputs API key only
-  - defaults:
-    - base URL: `https://openrouter.ai/api/v1`
-    - model: env/default fallback
-- `openai_compatible_custom`
-  - required: `apiKey`, `baseUrl`, `model`
-  - optional:
-    - `providerLabel`
-    - `extraHeaders` (JSON object)
-    - `extraQueryParams` (JSON object)
-    - `temperature`, `maxTokens`
-
-### Model override behavior
-
-- Request-level `llmModel` is still supported for backward compatibility.
-- Persisted settings are resolved first; model override is applied for that single request only.
-
-## Tech Stack
-
-- Next.js 16 (App Router)
-- React 19
-- TypeScript
-- Vercel Postgres (`@vercel/postgres`) for app memory DB
-- `pg`, `mysql2`, `sqlite3` for target DB access
-- `node-sql-parser` for SQL safety parsing
-
-## Project Structure
+Core folders:
 
 ```text
 app/
@@ -90,13 +82,13 @@ app/
     llm/
     settings/
 lib/
-  analysis/        # orchestration, prompts, planner flow
-  i18n/            # UI/prompt language helpers
-  llm/             # provider runtime + request assembly
-  target-db/       # DB connectors and introspection
-  memory-db.ts     # app memory persistence schema + access
-  validation.ts    # zod request validation
-  sql-safety.ts    # read-only SQL guardrails
+  analysis/
+  i18n/
+  llm/
+  memory-db.ts
+  sql-safety.ts
+  target-db/
+  validation.ts
 ```
 
 ## Quick Start
@@ -107,7 +99,7 @@ lib/
 npm install
 ```
 
-### 2) Configure environment
+### 2) Configure env
 
 ```bash
 cp .env.example .env.local
@@ -115,18 +107,15 @@ cp .env.example .env.local
 
 Required:
 
-- `POSTGRES_URL`: memory DB for app state
+- `POSTGRES_URL` (memory/state database)
 
-Optional auth:
+Optional:
 
-- `APP_ACCESS_PASSWORD`: enables app password gate
-
-Optional LLM defaults (used when no saved settings):
-
-- `APP_DEFAULT_LANGUAGE` (`en`/`zh`, default `en`)
+- `APP_ACCESS_PASSWORD` (UI password gate)
+- `APP_DEFAULT_LANGUAGE` (`en` or `zh`)
 - `LLM_PROVIDER`
-- OpenRouter envs (`OPENROUTER_API_KEY`, `OPENROUTER_MODEL`, etc.)
-- OpenAI-compatible envs (`OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL`)
+- `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`, `OPENROUTER_BASE_URL`
+- `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL`
 
 ### 3) Run
 
@@ -136,18 +125,20 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000).
 
-## LLM Settings API
+## LLM Settings
 
-- `GET /api/llm/config`
-  - provider defaults, selectable models, supported languages/provider modes
-- `GET /api/settings/llm?datasourceId=...&conversationId=...`
-  - returns effective + scoped settings
-- `PATCH /api/settings/llm/datasource/:id`
-  - upsert/reset datasource settings
-- `PATCH /api/settings/llm/conversation/:id`
-  - upsert/reset conversation override
+DataWowsight supports per-datasource LLM settings with deterministic fallback.
 
-## Core API
+Provider modes:
+
+- `openrouter_simple`
+  - API key (manual or env fallback)
+  - built-in model suggestions + custom model input
+- `openai_compatible_custom`
+  - required: `apiKey`, `baseUrl`, `model`
+  - optional: headers/query params/temperature/max tokens
+
+## API Surface (Core)
 
 - `POST /api/analysis/query`
 - `GET /api/analysis/runs/:id`
@@ -156,6 +147,9 @@ Open [http://localhost:3000](http://localhost:3000).
 - `POST /api/connections/:id/introspect`
 - `GET /api/conversations`
 - `POST /api/conversations/:id/messages`
+- `GET /api/llm/config`
+- `GET /api/settings/llm`
+- `PATCH /api/settings/llm/datasource/:id`
 
 ## Scripts
 
@@ -166,30 +160,37 @@ npm run build
 npm run start
 ```
 
-## Build Status (current)
-
-- `npm run lint` passes
-- `npm run build` passes
-
 ## Deployment Notes
 
-- Suitable for Vercel deployment
-- Ensure `POSTGRES_URL` is configured
+- Designed for lightweight deployment, especially Vercel
+- One-click style flow: connect repo -> set env -> deploy
+- Ensure memory DB is reachable from runtime
 - Use read-only credentials for target databases
-- For SQLite target access, runtime must support `sqlite3`
+- SQLite target support depends on runtime availability for `sqlite3`
 
 ## Security Notes
 
-- API keys in `llm_settings` are currently persisted in plaintext (current phase design)
-- Do not commit `.env.local`
-- Rotate any exposed credentials before open source release
+- `llm_settings` currently stores API keys in plaintext (current phase)
+- never commit `.env.local`
+- rotate exposed keys immediately
 
-## Limitations
+## Roadmap (Short-Term)
 
-- Very heavy scans can still timeout depending on target DB size/indexes
-- Query quality depends on schema quality, note quality, and index design
-- Serverless background execution is best-effort by platform limits
+- tenant-aware SaaS layer (auth, org, quota)
+- stronger key management options
+- richer chart planning and export workflows
+- first-class deployment templates
+
+## Contributing
+
+PRs are welcome.
+
+Please include:
+
+- problem statement
+- implementation summary
+- verification steps (`npm run lint`, `npm run build`)
 
 ## License
 
-No license file is included yet. Add a `LICENSE` (for example MIT) before publishing.
+Licensed under the Apache License 2.0. See [LICENSE](./LICENSE).
