@@ -16,6 +16,23 @@ Unlike many heavy BI/agent stacks, DataWowsight is intentionally lean:
 - deployable as-is on Vercel
 - fast to fork, run, and customize
 
+## Demo
+
+<p align="center">
+  <a href="https://pub-032d3556965b40dd91eeae2971b35392.r2.dev/show_demo_datawowsight_2.mp4">
+    <img src="https://pub-032d3556965b40dd91eeae2971b35392.r2.dev/agents1.png" alt="Watch the DataWowsight demo video" width="900" />
+  </a>
+</p>
+
+<p align="center">
+  Click the image above to watch the product demo video.
+</p>
+
+<p align="center">
+  <img src="https://pub-032d3556965b40dd91eeae2971b35392.r2.dev/agents2.png" alt="Multi-step SQL trace" width="48%" />
+  <img src="https://pub-032d3556965b40dd91eeae2971b35392.r2.dev/agents3.png" alt="Chart generation" width="48%" />
+</p>
+
 ## Why DataWowsight
 
 Most chat-to-SQL tools hide execution details. DataWowsight does the opposite:
